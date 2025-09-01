@@ -21,6 +21,11 @@ export default function Browse() {
   const [databases, setDatabases] = useState<string[]>([]);
   const [selectedDatabase, setSelectedDatabase] = useState<string>("");
   const [loadingDatabases, setLoadingDatabases] = useState(false);
+  const [treeStructure, setTreeStructure] = useState<{
+    [key: string]: { children: string[]; type: string; dn: string };
+  }>({});
+  const [expandedNodes, setExpandedNodes] = useState<Set<string>>(new Set());
+  const [loadingTree, setLoadingTree] = useState(false);
   const connectionLoadedRef = useRef(false);
 
   useEffect(() => {
@@ -39,6 +44,7 @@ export default function Browse() {
           bindDN: string;
           password: string;
           insecure?: boolean;
+          baseDN?: string;
         };
         console.log("🔍 [DEBUG] Parsed connection config:", {
           ...cfg,
@@ -50,6 +56,9 @@ export default function Browse() {
         setBindDN(cfg.bindDN || "");
         setPassword(cfg.password || "");
         setInsecure(!!cfg.insecure);
+        if (cfg.baseDN) {
+          setBaseDN(cfg.baseDN);
+        }
 
         console.log("✅ [DEBUG] Connection details set from sessionStorage");
         console.log("🔧 [DEBUG] State variables set to:", {
@@ -141,7 +150,7 @@ export default function Browse() {
             url,
             bindDN,
             password,
-            baseDN: "", // Empty means root DSE
+            baseDN: "dc=dcm4che,dc=org", // Use the actual base DN
             filter: "(objectClass=*)",
             scope: "one", // Only immediate children
             tls: insecure ? { rejectUnauthorized: false } : undefined,
@@ -180,6 +189,7 @@ export default function Browse() {
 
             // Fallback: try common base DNs
             const commonBaseDNs = [
+              "dc=dcm4che,dc=org", // Primary domain
               "dc=example,dc=com",
               "dc=test,dc=com",
               "dc=local",
@@ -389,6 +399,13 @@ export default function Browse() {
           data.entries?.length || 0
         );
         setEntries(data.entries || []);
+
+        // Build tree structure from entries
+        if (data.entries && data.entries.length > 0) {
+          const tree = buildTreeStructure(data.entries);
+          setTreeStructure(tree);
+          console.log("🌳 [DEBUG] Built tree structure:", tree);
+        }
       } else {
         const errorMsg = data?.error || res.statusText;
         console.log("❌ [DEBUG] Search failed with error:", errorMsg);
@@ -414,11 +431,67 @@ export default function Browse() {
     }
   }
 
-  function handleDatabaseClick(database: string) {
+  async function handleDatabaseClick(database: string) {
     setSelectedDatabase(database);
     setBaseDN(database);
     setEntries(null);
     setError(null);
+    setTreeStructure({});
+    setExpandedNodes(new Set());
+    setLoadingTree(true);
+
+    // Automatically search for entries in this database to build tree structure
+    if (url && bindDN && password) {
+      try {
+        console.log(
+          "🔍 [DEBUG] Auto-searching database for tree structure:",
+          database
+        );
+
+        const searchPayload = {
+          url,
+          bindDN,
+          password,
+          baseDN: database,
+          filter: "(objectClass=*)",
+          tls: insecure ? { rejectUnauthorized: false } : undefined,
+        };
+
+        const res = await fetch("/api/ldap/search", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(searchPayload),
+        });
+
+        if (res.ok) {
+          const data = await res.json();
+          if (data?.ok && data.entries && data.entries.length > 0) {
+            console.log(
+              "✅ [DEBUG] Auto-search successful, building tree structure"
+            );
+            setEntries(data.entries);
+
+            // Build tree structure from entries
+            const tree = buildTreeStructure(data.entries);
+            setTreeStructure(tree);
+            console.log(
+              "🌳 [DEBUG] Built tree structure from auto-search:",
+              tree
+            );
+          } else {
+            console.log("⚠️ [DEBUG] Auto-search returned no entries");
+          }
+        } else {
+          console.log("⚠️ [DEBUG] Auto-search failed:", res.status);
+        }
+      } catch (err) {
+        console.error("❌ [DEBUG] Auto-search error:", err);
+      } finally {
+        setLoadingTree(false);
+      }
+    } else {
+      setLoadingTree(false);
+    }
   }
 
   function removeDatabase(database: string) {
@@ -1126,6 +1199,206 @@ export default function Browse() {
     }
   }
 
+  // Function to build tree structure from entries
+  function buildTreeStructure(entries: LdapEntry[]) {
+    const tree: {
+      [key: string]: { children: string[]; type: string; dn: string };
+    } = {};
+
+    entries.forEach((entry) => {
+      const dnParts = entry.dn.split(",");
+      const currentDN = entry.dn;
+
+      // Determine entry type based on first RDN
+      const firstRDN = dnParts[0].trim();
+      let type = "entry";
+      if (firstRDN.startsWith("ou=")) type = "ou";
+      else if (firstRDN.startsWith("cn=")) type = "user";
+      else if (firstRDN.startsWith("dc=")) type = "domain";
+
+      // Add to tree
+      tree[currentDN] = {
+        children: [],
+        type,
+        dn: currentDN,
+      };
+
+      // Find parent and add as child
+      if (dnParts.length > 1) {
+        const parentDN = dnParts.slice(1).join(",");
+        if (tree[parentDN]) {
+          tree[parentDN].children.push(currentDN);
+        }
+      }
+    });
+
+    return tree;
+  }
+
+  // Function to toggle node expansion
+  function toggleNodeExpansion(dn: string) {
+    const newExpanded = new Set(expandedNodes);
+    if (newExpanded.has(dn)) {
+      newExpanded.delete(dn);
+    } else {
+      newExpanded.add(dn);
+    }
+    setExpandedNodes(newExpanded);
+  }
+
+  // Function to render tree node
+  function renderTreeNode(dn: string, level: number = 0) {
+    const node = treeStructure[dn];
+    if (!node) return null;
+
+    const isExpanded = expandedNodes.has(dn);
+    const hasChildren = node.children.length > 0;
+
+    return (
+      <div key={dn} style={{ marginLeft: `${level * 20}px` }}>
+        <div
+          onClick={() => {
+            toggleNodeExpansion(dn);
+            // Only call handleDatabaseClick if this is a root-level node (database)
+            const dnParts = dn.split(",");
+            if (
+              dnParts.length <= 2 ||
+              dnParts[dnParts.length - 1].trim().startsWith("dc=")
+            ) {
+              // Navigate to the database page instead of handling locally
+              window.location.href = `/browse/${encodeURIComponent(dn)}`;
+            }
+          }}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            padding: "8px 12px",
+            cursor: "pointer",
+            borderRadius: "6px",
+            marginBottom: "2px",
+            background: selectedDatabase === dn ? "#3b82f6" : "transparent",
+            color: selectedDatabase === dn ? "#fff" : "#374151",
+            transition: "all 0.2s ease",
+          }}
+          onMouseOver={(e) => {
+            if (selectedDatabase !== dn) {
+              e.currentTarget.style.background = "#e5e7eb";
+            }
+          }}
+          onMouseOut={(e) => {
+            if (selectedDatabase !== dn) {
+              e.currentTarget.style.background =
+                selectedDatabase === dn ? "#3b82f6" : "transparent";
+            }
+          }}
+        >
+          {/* Expand/collapse icon */}
+          {hasChildren && (
+            <svg
+              width="12"
+              height="12"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              style={{
+                marginRight: "6px",
+                transform: isExpanded ? "rotate(90deg)" : "rotate(0deg)",
+                transition: "transform 0.2s ease",
+              }}
+            >
+              <polyline points="9,18 15,12 9,6"></polyline>
+            </svg>
+          )}
+
+          {/* Entry type icon */}
+          <span style={{ marginRight: "6px" }}>
+            {node.type === "ou" ? (
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+              >
+                <path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"></path>
+              </svg>
+            ) : node.type === "user" ? (
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+              >
+                <circle cx="12" cy="8" r="5"></circle>
+                <path d="M20 21a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2"></path>
+              </svg>
+            ) : node.type === "domain" ? (
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+              >
+                <path d="M12 2L2 7l10 5 10-5-10-5z"></path>
+                <path d="M2 17l10 5 10-5"></path>
+                <path d="M2 12l10 5 10-5"></path>
+              </svg>
+            ) : (
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+              >
+                <circle cx="12" cy="12" r="10"></circle>
+              </svg>
+            )}
+          </span>
+
+          {/* Entry name */}
+          <span
+            style={{
+              flex: 1,
+              fontSize: "13px",
+              display: "flex",
+              alignItems: "center",
+              gap: "4px",
+            }}
+          >
+            <span>{dn.split(",")[0].split("=")[1]}</span>
+            {level === 0 && dn.includes("dc=") && (
+              <span
+                style={{
+                  color: "#ffffff",
+                  fontSize: "11px",
+                }}
+              >
+                (Database)
+              </span>
+            )}
+          </span>
+        </div>
+
+        {/* Render children if expanded */}
+        {isExpanded && hasChildren && (
+          <div>
+            {node.children.map((childDN) => renderTreeNode(childDN, level + 1))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div
       style={{
@@ -1512,123 +1785,241 @@ export default function Browse() {
             <div
               style={{ display: "flex", flexDirection: "column", gap: "4px" }}
             >
-              {databases.map((database) => (
+              {/* Show loading state, tree structure, or flat list */}
+              {loadingTree ? (
                 <div
-                  key={database}
-                  onClick={() => handleDatabaseClick(database)}
                   style={{
-                    padding: "12px 16px",
-                    border: "none",
-                    background:
-                      selectedDatabase === database ? "#3b82f6" : "transparent",
-                    color: selectedDatabase === database ? "#fff" : "#374151",
-                    cursor: "pointer",
-                    borderRadius: "8px",
-                    textAlign: "left",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "8px",
+                    padding: "12px",
+                    color: "#6b7280",
                     fontSize: "14px",
-                    fontWeight: selectedDatabase === database ? "500" : "400",
-                    transition: "all 0.2s ease",
-                    wordBreak: "break-all",
-                  }}
-                  onMouseOver={(e) => {
-                    if (selectedDatabase !== database) {
-                      e.currentTarget.style.background = "#e5e7eb";
-                    }
-                  }}
-                  onMouseOut={(e) => {
-                    if (selectedDatabase !== database) {
-                      e.currentTarget.style.background = "transparent";
-                    }
                   }}
                 >
-                  <div
+                  <svg
+                    width="16"
+                    height="16"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    style={{ animation: "spin 1s linear infinite" }}
+                  >
+                    <path d="M21 2v6h-6"></path>
+                    <path d="M3 12a9 9 0 0 1 15-6.7L21 8"></path>
+                    <path d="M3 22v-6h6"></path>
+                    <path d="M21 12a9 9 0 0 1-15 6.7L3 16"></path>
+                  </svg>
+                  Loading structure...
+                </div>
+              ) : Object.keys(treeStructure).length > 0 ? (
+                <div>
+                  {/* Go Back button */}
+                  <button
+                    onClick={() => {
+                      setTreeStructure({});
+                      setExpandedNodes(new Set());
+                      setSelectedDatabase("");
+                      setBaseDN("");
+                      setEntries(null);
+                      setError(null);
+                    }}
                     style={{
+                      width: "100%",
+                      padding: "8px 12px",
+                      marginBottom: "12px",
+                      borderRadius: "6px",
+                      border: "1px solid #d1d5db",
+                      background: "#fff",
+                      color: "#374151",
+                      cursor: "pointer",
+                      fontSize: "12px",
+                      fontWeight: "500",
+                      transition: "all 0.2s ease",
                       display: "flex",
                       alignItems: "center",
-                      gap: "8px",
+                      justifyContent: "center",
+                      gap: "6px",
+                    }}
+                    onMouseOver={(e) => {
+                      e.currentTarget.style.background = "#f3f4f6";
+                      e.currentTarget.style.borderColor = "#9ca3af";
+                    }}
+                    onMouseOut={(e) => {
+                      e.currentTarget.style.background = "#fff";
+                      e.currentTarget.style.borderColor = "#d1d5db";
                     }}
                   >
-                    <span style={{ fontSize: "16px" }}>
-                      {selectedDatabase === database ? (
-                        <svg
-                          width="16"
-                          height="16"
-                          viewBox="0 0 24 24"
-                          fill="none"
-                          stroke="currentColor"
-                          strokeWidth="2"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                        >
-                          <path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"></path>
-                        </svg>
-                      ) : (
-                        <svg
-                          width="16"
-                          height="16"
-                          viewBox="0 0 24 24"
-                          fill="none"
-                          stroke="currentColor"
-                          strokeWidth="2"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                        >
-                          <path d="M4 20h16a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"></path>
-                        </svg>
-                      )}
-                    </span>
-                    <span style={{ flex: 1 }}>
-                      {database.split(",").map((part, idx) => (
-                        <span key={idx}>
-                          {idx > 0 && <br />}
-                          {part.trim()}
-                        </span>
-                      ))}
-                    </span>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        removeDatabase(database);
-                      }}
+                    <svg
+                      width="12"
+                      height="12"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <path d="m15 18-6-6 6-6"></path>
+                    </svg>
+                    Back to Databases
+                  </button>
+
+                  {/* Tree Structure Header */}
+                  <div
+                    style={{
+                      padding: "8px 0",
+                      borderBottom: "1px solid #e5e7eb",
+                      marginBottom: "8px",
+                      fontSize: "12px",
+                      fontWeight: "600",
+                      color: "#374151",
+                    }}
+                  >
+                    Tree Structure
+                  </div>
+
+                  {/* Render root nodes (entries without parents) */}
+                  {Object.keys(treeStructure)
+                    .filter((dn) => {
+                      const dnParts = dn.split(",");
+                      return (
+                        dnParts.length === 1 ||
+                        !treeStructure[dnParts.slice(1).join(",")]
+                      );
+                    })
+                    .map((dn) => renderTreeNode(dn))}
+                </div>
+              ) : (
+                /* Fallback to flat database list */
+                databases.map((database) => (
+                  <div
+                    key={database}
+                    onClick={() => {
+                      // Navigate to the database page
+                      window.location.href = `/browse/${encodeURIComponent(
+                        database
+                      )}`;
+                    }}
+                    style={{
+                      padding: "12px 16px",
+                      border: "none",
+                      background:
+                        selectedDatabase === database
+                          ? "#3b82f6"
+                          : "transparent",
+                      color: selectedDatabase === database ? "#fff" : "#374151",
+                      cursor: "pointer",
+                      borderRadius: "8px",
+                      textAlign: "left",
+                      fontSize: "14px",
+                      fontWeight: selectedDatabase === database ? "500" : "400",
+                      transition: "all 0.2s ease",
+                      wordBreak: "break-all",
+                    }}
+                    onMouseOver={(e) => {
+                      if (selectedDatabase !== database) {
+                        e.currentTarget.style.background = "#e5e7eb";
+                      }
+                    }}
+                    onMouseOut={(e) => {
+                      if (selectedDatabase !== database) {
+                        e.currentTarget.style.background = "transparent";
+                      }
+                    }}
+                  >
+                    <div
                       style={{
-                        padding: "4px 6px",
-                        borderRadius: "4px",
-                        border: "none",
-                        background: "#ef4444",
-                        color: "#fff",
-                        cursor: "pointer",
-                        fontSize: "10px",
-                        transition: "all 0.2s ease",
-                        minHeight: "24px",
                         display: "flex",
                         alignItems: "center",
-                        justifyContent: "center",
+                        gap: "8px",
                       }}
-                      onMouseOver={(e) => {
-                        e.currentTarget.style.background = "#dc2626";
-                      }}
-                      onMouseOut={(e) => {
-                        e.currentTarget.style.background = "#ef4444";
-                      }}
-                      title="Remove database"
                     >
-                      <svg
-                        width="10"
-                        height="10"
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="2"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
+                      <span style={{ fontSize: "16px" }}>
+                        {selectedDatabase === database ? (
+                          <svg
+                            width="16"
+                            height="16"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                          >
+                            <path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"></path>
+                          </svg>
+                        ) : (
+                          <svg
+                            width="16"
+                            height="16"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                          >
+                            <path d="M4 20h16a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"></path>
+                          </svg>
+                        )}
+                      </span>
+                      <span style={{ flex: 1 }}>
+                        {database.split(",").map((part, idx) => (
+                          <span key={idx}>
+                            {idx > 0 && <br />}
+                            {part.trim()}
+                          </span>
+                        ))}
+                      </span>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          removeDatabase(database);
+                        }}
+                        style={{
+                          padding: "4px 6px",
+                          borderRadius: "4px",
+                          border: "none",
+                          background: "#ef4444",
+                          color: "#fff",
+                          cursor: "pointer",
+                          fontSize: "10px",
+                          transition: "all 0.2s ease",
+                          minHeight: "24px",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                        }}
+                        onMouseOver={(e) => {
+                          e.currentTarget.style.background = "#dc2626";
+                        }}
+                        onMouseOut={(e) => {
+                          e.currentTarget.style.background = "#ef4444";
+                        }}
+                        title="Remove database"
                       >
-                        <line x1="18" y1="6" x2="6" y2="18"></line>
-                        <line x1="6" y1="6" x2="18" y2="18"></line>
-                      </svg>
-                    </button>
+                        <svg
+                          width="10"
+                          height="10"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        >
+                          <line x1="18" y1="6" x2="6" y2="18"></line>
+                          <line x1="6" y1="6" x2="18" y2="18"></line>
+                        </svg>
+                      </button>
+                    </div>
                   </div>
-                </div>
-              ))}
+                ))
+              )}
             </div>
           )}
         </div>
@@ -1728,6 +2119,7 @@ export default function Browse() {
             </div>
           ) : selectedDatabase ? (
             <>
+              {/* Database Header */}
               <div style={{ marginBottom: "24px" }}>
                 <h2
                   style={{
@@ -1740,34 +2132,194 @@ export default function Browse() {
                   {selectedDatabase}
                 </h2>
                 <p style={{ margin: 0, color: "#6b7280", fontSize: "14px" }}>
-                  Browse and manage entries in this database
+                  Database Management - Add, Edit, and View Entries
                 </p>
-                {selectedDatabase.startsWith("ou=") && (
+              </div>
+
+              {/* Quick Actions */}
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
+                  gap: "16px",
+                  marginBottom: "24px",
+                }}
+              >
+                {/* View All Entries */}
+                <div
+                  style={{
+                    padding: "20px",
+                    border: "1px solid #e5e7eb",
+                    borderRadius: "12px",
+                    background: "#f8fafc",
+                    cursor: "pointer",
+                    transition: "all 0.2s ease",
+                  }}
+                  onMouseOver={(e) => {
+                    e.currentTarget.style.background = "#f1f5f9";
+                    e.currentTarget.style.borderColor = "#cbd5e1";
+                  }}
+                  onMouseOut={(e) => {
+                    e.currentTarget.style.background = "#f8fafc";
+                    e.currentTarget.style.borderColor = "#e5e7eb";
+                  }}
+                  onClick={() => {
+                    setFilter("(objectClass=*)");
+                    onSearch(new Event("submit") as unknown as React.FormEvent);
+                  }}
+                >
                   <div
                     style={{
-                      marginTop: "8px",
-                      padding: "8px 12px",
-                      background: "#fef3c7",
-                      border: "1px solid #f59e0b",
-                      borderRadius: "6px",
-                      fontSize: "12px",
-                      color: "#92400e",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "12px",
+                      marginBottom: "8px",
                     }}
                   >
-                    💡 <strong>Tip:</strong> This organizational unit needs its
-                    parent domain to exist first. Make sure{" "}
-                    <code
+                    <svg
+                      width="20"
+                      height="20"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                    >
+                      <path d="M9 12l2 2 4-4"></path>
+                      <path d="M21 12c-1 0-3-1-3-3s2-3 3-3 3 1 3 3-2 3-3 3z"></path>
+                      <path d="M3 12c1 0 3-1 3-3s-2-3-3-3-3 1-3 3 2 3 3 3z"></path>
+                    </svg>
+                    <h3
                       style={{
-                        background: "#fde68a",
-                        padding: "2px 4px",
-                        borderRadius: "3px",
+                        margin: 0,
+                        fontSize: "16px",
+                        fontWeight: "600",
+                        color: "#374151",
                       }}
                     >
-                      {selectedDatabase.split(",").slice(1).join(",")}
-                    </code>{" "}
-                    exists on the LDAP server.
+                      View All Entries
+                    </h3>
                   </div>
-                )}
+                  <p style={{ margin: 0, fontSize: "14px", color: "#6b7280" }}>
+                    Browse all existing entries in this database
+                  </p>
+                </div>
+
+                {/* Quick Search */}
+                <div
+                  style={{
+                    padding: "20px",
+                    border: "1px solid #e5e7eb",
+                    borderRadius: "12px",
+                    background: "#f8fafc",
+                    cursor: "pointer",
+                    transition: "all 0.2s ease",
+                  }}
+                  onMouseOver={(e) => {
+                    e.currentTarget.style.background = "#f1f5f9";
+                    e.currentTarget.style.borderColor = "#cbd5e1";
+                  }}
+                  onMouseOut={(e) => {
+                    e.currentTarget.style.background = "#f8fafc";
+                    e.currentTarget.style.borderColor = "#e5e7eb";
+                  }}
+                  onClick={() => {
+                    setFilter("(objectClass=organizationalUnit)");
+                    onSearch(new Event("submit") as unknown as React.FormEvent);
+                  }}
+                >
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "12px",
+                      marginBottom: "8px",
+                    }}
+                  >
+                    <svg
+                      width="20"
+                      height="20"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                    >
+                      <path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"></path>
+                    </svg>
+                    <h3
+                      style={{
+                        margin: 0,
+                        fontSize: "16px",
+                        fontWeight: "600",
+                        color: "#374151",
+                      }}
+                    >
+                      View OUs Only
+                    </h3>
+                  </div>
+                  <p style={{ margin: 0, fontSize: "14px", color: "#6b7280" }}>
+                    Show only organizational units
+                  </p>
+                </div>
+
+                {/* Add New Entry */}
+                <div
+                  style={{
+                    padding: "20px",
+                    border: "1px solid #e5e7eb",
+                    borderRadius: "12px",
+                    background: "#f8fafc",
+                    cursor: "pointer",
+                    transition: "all 0.2s ease",
+                  }}
+                  onMouseOver={(e) => {
+                    e.currentTarget.style.background = "#f1f5f9";
+                    e.currentTarget.style.borderColor = "#cbd5e1";
+                  }}
+                  onMouseOut={(e) => {
+                    e.currentTarget.style.background = "#f8fafc";
+                    e.currentTarget.style.borderColor = "#e5e7eb";
+                  }}
+                  onClick={() => {
+                    // Scroll to add entry section
+                    document
+                      .getElementById("add-entry-section")
+                      ?.scrollIntoView({ behavior: "smooth" });
+                  }}
+                >
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "12px",
+                      marginBottom: "8px",
+                    }}
+                  >
+                    <svg
+                      width="20"
+                      height="20"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                    >
+                      <line x1="12" y1="5" x2="12" y2="19"></line>
+                      <line x1="5" y1="12" x2="19" y2="12"></line>
+                    </svg>
+                    <h3
+                      style={{
+                        margin: 0,
+                        fontSize: "16px",
+                        fontWeight: "600",
+                        color: "#374151",
+                      }}
+                    >
+                      Add New Entry
+                    </h3>
+                  </div>
+                  <p style={{ margin: 0, fontSize: "14px", color: "#6b7280" }}>
+                    Create new organizational units or users
+                  </p>
+                </div>
               </div>
 
               {/* Search Form */}
@@ -1788,7 +2340,7 @@ export default function Browse() {
                     color: "#374151",
                   }}
                 >
-                  Search Entries
+                  Custom Search
                 </h3>
                 <form
                   onSubmit={onSearch}
@@ -1816,6 +2368,7 @@ export default function Browse() {
                       <input
                         value={filter}
                         onChange={(e) => setFilter(e.target.value)}
+                        placeholder="(objectClass=*)"
                         style={{
                           width: "100%",
                           padding: "12px 16px",
@@ -2102,6 +2655,7 @@ export default function Browse() {
           {/* Add Entry Section - Only show when database is selected */}
           {selectedDatabase && (
             <div
+              id="add-entry-section"
               style={{
                 border: "1px solid #e5e7eb",
                 padding: "24px",
@@ -2526,7 +3080,9 @@ export default function Browse() {
                       e.currentTarget.style.transform = "translateY(0)";
                     }}
                   >
-                    Add Entry
+                    {entries && entries.some((entry) => entry.dn === newDn)
+                      ? "Update Entry"
+                      : "Add Entry"}
                   </button>
                 </div>
               </div>
@@ -2548,6 +3104,9 @@ export default function Browse() {
                   padding: "20px",
                   borderBottom: "1px solid #e5e7eb",
                   background: "#fafafa",
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
                 }}
               >
                 <h3
@@ -2560,6 +3119,66 @@ export default function Browse() {
                 >
                   Search Results ({entries.length} entries)
                 </h3>
+                <div style={{ display: "flex", gap: "8px" }}>
+                  <button
+                    onClick={() => {
+                      setFilter("(objectClass=*)");
+                      onSearch(
+                        new Event("submit") as unknown as React.FormEvent
+                      );
+                    }}
+                    style={{
+                      padding: "6px 12px",
+                      borderRadius: "6px",
+                      border: "1px solid #d1d5db",
+                      background: "#fff",
+                      color: "#374151",
+                      cursor: "pointer",
+                      fontSize: "12px",
+                      fontWeight: "500",
+                      transition: "all 0.2s ease",
+                    }}
+                    onMouseOver={(e) => {
+                      e.currentTarget.style.background = "#f3f4f6";
+                      e.currentTarget.style.borderColor = "#9ca3af";
+                    }}
+                    onMouseOut={(e) => {
+                      e.currentTarget.style.background = "#fff";
+                      e.currentTarget.style.borderColor = "#d1d5db";
+                    }}
+                  >
+                    Show All
+                  </button>
+                  <button
+                    onClick={() => {
+                      setFilter("(objectClass=organizationalUnit)");
+                      onSearch(
+                        new Event("submit") as unknown as React.FormEvent
+                      );
+                    }}
+                    style={{
+                      padding: "6px 12px",
+                      borderRadius: "6px",
+                      border: "1px solid #d1d5db",
+                      background: "#fff",
+                      color: "#374151",
+                      cursor: "pointer",
+                      fontSize: "12px",
+                      fontWeight: "500",
+                      transition: "all 0.2s ease",
+                    }}
+                    onMouseOver={(e) => {
+                      e.currentTarget.style.background = "#f3f4f6";
+                      e.currentTarget.style.borderColor = "#9ca3af";
+                    }}
+                    onMouseOut={(e) => {
+                      e.currentTarget.style.background = "#fff";
+                      e.currentTarget.style.borderColor = "#d1d5db";
+                    }}
+                  >
+                    OUs Only
+                  </button>
+                </div>
               </div>
               <div style={{ overflowX: "auto" }}>
                 <table
@@ -2627,66 +3246,106 @@ export default function Browse() {
                             >
                               {entry.dn}
                             </span>
-                            <button
-                              onClick={async () => {
-                                setError(null);
-                                try {
-                                  const ok = confirm(`Delete ${entry.dn}?`);
-                                  if (!ok) return;
-                                  const res = await fetch("/api/ldap/delete", {
-                                    method: "POST",
-                                    headers: {
-                                      "Content-Type": "application/json",
-                                    },
-                                    body: JSON.stringify({
-                                      url,
-                                      bindDN,
-                                      password,
-                                      entryDN: entry.dn,
-                                      tls: insecure
-                                        ? { rejectUnauthorized: false }
-                                        : undefined,
-                                    }),
-                                  });
-                                  const data = await res.json();
-                                  if (!res.ok || !data?.ok)
-                                    throw new Error(
-                                      data?.error || res.statusText
+                            <div style={{ display: "flex", gap: "8px" }}>
+                              <button
+                                onClick={() => {
+                                  // Set the form to edit this entry
+                                  setNewDn(entry.dn);
+                                  setNewAttrs(JSON.stringify(entry, null, 2));
+                                  // Scroll to add entry section
+                                  document
+                                    .getElementById("add-entry-section")
+                                    ?.scrollIntoView({ behavior: "smooth" });
+                                }}
+                                style={{
+                                  padding: "8px 12px",
+                                  borderRadius: "6px",
+                                  border: "none",
+                                  background: "#3b82f6",
+                                  color: "#fff",
+                                  cursor: "pointer",
+                                  fontWeight: "500",
+                                  fontSize: "12px",
+                                  transition: "all 0.2s ease",
+                                  whiteSpace: "nowrap",
+                                  minHeight: "32px",
+                                  display: "flex",
+                                  alignItems: "center",
+                                  justifyContent: "center",
+                                }}
+                                onMouseOver={(e) => {
+                                  e.currentTarget.style.background = "#2563eb";
+                                }}
+                                onMouseOut={(e) => {
+                                  e.currentTarget.style.background = "#3b82f6";
+                                }}
+                              >
+                                Edit
+                              </button>
+                              <button
+                                onClick={async () => {
+                                  setError(null);
+                                  try {
+                                    const ok = confirm(`Delete ${entry.dn}?`);
+                                    if (!ok) return;
+                                    const res = await fetch(
+                                      "/api/ldap/delete",
+                                      {
+                                        method: "POST",
+                                        headers: {
+                                          "Content-Type": "application/json",
+                                        },
+                                        body: JSON.stringify({
+                                          url,
+                                          bindDN,
+                                          password,
+                                          entryDN: entry.dn,
+                                          tls: insecure
+                                            ? { rejectUnauthorized: false }
+                                            : undefined,
+                                        }),
+                                      }
                                     );
-                                  await onSearch(
-                                    new Event(
-                                      "submit"
-                                    ) as unknown as React.FormEvent
-                                  );
-                                } catch (e) {
-                                  setError((e as Error).message);
-                                }
-                              }}
-                              style={{
-                                padding: "8px 12px",
-                                borderRadius: "6px",
-                                border: "none",
-                                background: "#ef4444",
-                                color: "#fff",
-                                cursor: "pointer",
-                                fontWeight: "500",
-                                fontSize: "12px",
-                                transition: "all 0.2s ease",
-                                whiteSpace: "nowrap",
-                                minHeight: "32px",
-                                display: "flex",
-                                alignItems: "center",
-                                justifyContent: "center",
-                              }}
-                              onMouseOver={(e) => {
-                                e.currentTarget.style.background = "#dc2626";
-                              }}
-                              onMouseOut={(e) => {
-                                e.currentTarget.style.background = "#ef4444";
-                              }}
-                            >
-                              Delete
-                            </button>
+                                    const data = await res.json();
+                                    if (!res.ok || !data?.ok)
+                                      throw new Error(
+                                        data?.error || res.statusText
+                                      );
+                                    await onSearch(
+                                      new Event(
+                                        "submit"
+                                      ) as unknown as React.FormEvent
+                                    );
+                                  } catch (e) {
+                                    setError((e as Error).message);
+                                  }
+                                }}
+                                style={{
+                                  padding: "8px 12px",
+                                  borderRadius: "6px",
+                                  border: "none",
+                                  background: "#ef4444",
+                                  color: "#fff",
+                                  cursor: "pointer",
+                                  fontWeight: "500",
+                                  fontSize: "12px",
+                                  transition: "all 0.2s ease",
+                                  whiteSpace: "nowrap",
+                                  minHeight: "32px",
+                                  display: "flex",
+                                  alignItems: "center",
+                                  justifyContent: "center",
+                                }}
+                                onMouseOver={(e) => {
+                                  e.currentTarget.style.background = "#dc2626";
+                                }}
+                                onMouseOut={(e) => {
+                                  e.currentTarget.style.background = "#ef4444";
+                                }}
+                              >
+                                Delete
+                              </button>
+                            </div>
                           </div>
                         </td>
                         <td

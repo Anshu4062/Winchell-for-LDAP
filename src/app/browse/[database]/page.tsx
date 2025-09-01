@@ -1,0 +1,510 @@
+"use client";
+
+import { useState, useEffect } from "react";
+import Link from "next/link";
+import { use } from "react";
+
+interface LdapEntry {
+  dn: string;
+  [key: string]: unknown;
+}
+
+export default function DatabasePage({
+  params,
+}: {
+  params: Promise<{ database: string }>;
+}) {
+  const [url, setUrl] = useState("");
+  const [bindDN, setBindDN] = useState("");
+  const [password, setPassword] = useState("");
+  const [insecure, setInsecure] = useState(false);
+  const [entries, setEntries] = useState<LdapEntry[] | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [filter, setFilter] = useState("(objectClass=*)");
+  const [newDn, setNewDn] = useState("");
+  const [newAttrs, setNewAttrs] = useState("");
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [activeAction, setActiveAction] = useState<string>("");
+
+  const resolvedParams = use(params);
+  const databaseName = decodeURIComponent(resolvedParams.database);
+
+  useEffect(() => {
+    const connectionData = sessionStorage.getItem("ldapConnection");
+    if (connectionData) {
+      try {
+        const config = JSON.parse(connectionData);
+        setUrl(config.url || "");
+        setBindDN(config.bindDN || "");
+        setPassword(config.password || "");
+        setInsecure(config.insecure || false);
+
+        if (config.url && config.bindDN && config.password) {
+          loadDatabaseEntries(
+            config.url,
+            config.bindDN,
+            config.password,
+            config.insecure
+          );
+        }
+      } catch (e) {
+        console.error("Failed to parse connection data:", e);
+      }
+    }
+  }, [databaseName]);
+
+  const loadDatabaseEntries = async (
+    ldapUrl: string,
+    ldapBindDN: string,
+    ldapPassword: string,
+    ldapInsecure: boolean
+  ) => {
+    setLoading(true);
+    setError(null);
+
+    try {
+      const searchPayload = {
+        url: ldapUrl,
+        bindDN: ldapBindDN,
+        password: ldapPassword,
+        baseDN: databaseName,
+        filter: "(objectClass=*)",
+        tls: ldapInsecure ? { rejectUnauthorized: false } : undefined,
+      };
+
+      const res = await fetch("/api/ldap/search", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(searchPayload),
+      });
+
+      if (!res.ok) {
+        const errorData = await res.json();
+        throw new Error(errorData?.error || res.statusText);
+      }
+
+      const data = await res.json();
+      if (data?.ok && data.entries) {
+        setEntries(data.entries);
+      } else {
+        setEntries([]);
+      }
+    } catch (e) {
+      setError((e as Error).message);
+      setEntries([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const onSearch = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!url || !bindDN || !password) {
+      setError("Missing connection details");
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+
+    try {
+      const searchPayload = {
+        url,
+        bindDN,
+        password,
+        baseDN: databaseName,
+        filter: filter || "(objectClass=*)",
+        tls: insecure ? { rejectUnauthorized: false } : undefined,
+      };
+
+      const res = await fetch("/api/ldap/search", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(searchPayload),
+      });
+
+      if (!res.ok) {
+        const errorData = await res.json();
+        throw new Error(errorData?.error || res.statusText);
+      }
+
+      const data = await res.json();
+      if (data?.ok && data.entries) {
+        setEntries(data.entries);
+      } else {
+        setEntries([]);
+      }
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  if (!url || !bindDN || !password) {
+    return (
+      <div style={{ padding: "40px", textAlign: "center" }}>
+        <h2>Connection Required</h2>
+        <p>Please connect to an LDAP server first.</p>
+        <Link href="/" style={{ color: "#3b82f6", textDecoration: "none" }}>
+          Go to Connect Page
+        </Link>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ padding: "24px", maxWidth: "1200px", margin: "0 auto" }}>
+      <div style={{ marginBottom: "32px" }}>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: "16px",
+            marginBottom: "16px",
+          }}
+        >
+          <Link
+            href="/browse"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "8px",
+              color: "#6b7280",
+              textDecoration: "none",
+              fontSize: "14px",
+            }}
+          >
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+            >
+              <path d="m15 18-6-6 6-6" />
+            </svg>
+            Back to Databases
+          </Link>
+        </div>
+        <h1
+          style={{
+            margin: "0 0 8px 0",
+            fontSize: "28px",
+            fontWeight: "600",
+            color: "#1a1a1a",
+          }}
+        >
+          {databaseName}
+        </h1>
+        <p style={{ margin: 0, color: "#6b7280", fontSize: "16px" }}>
+          Database Management - View, Create, Edit, and Delete Entries
+        </p>
+      </div>
+
+      {error && (
+        <div
+          style={{
+            padding: "16px",
+            background: "#fef2f2",
+            border: "1px solid #fecaca",
+            borderRadius: "8px",
+            color: "#dc2626",
+            marginBottom: "24px",
+          }}
+        >
+          {error}
+        </div>
+      )}
+
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit, minmax(250px, 1fr))",
+          gap: "16px",
+          marginBottom: "32px",
+        }}
+      >
+        <div
+          style={{
+            padding: "20px",
+            border: "1px solid #e5e7eb",
+            borderRadius: "12px",
+            background: activeAction === "viewAll" ? "#dbeafe" : "#f8fafc",
+            cursor: "pointer",
+            transition: "all 0.2s ease",
+          }}
+          onMouseOver={(e) => {
+            if (activeAction !== "viewAll") {
+              e.currentTarget.style.background = "#f1f5f9";
+              e.currentTarget.style.borderColor = "#cbd5e1";
+            }
+          }}
+          onMouseOut={(e) => {
+            if (activeAction !== "viewAll") {
+              e.currentTarget.style.background = "#f8fafc";
+              e.currentTarget.style.borderColor = "#e5e7eb";
+            }
+          }}
+          onClick={() => {
+            setFilter("(objectClass=*)");
+            setActiveAction("viewAll");
+            onSearch(new Event("submit") as unknown as React.FormEvent);
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "12px",
+              marginBottom: "8px",
+            }}
+          >
+            <svg
+              width="20"
+              height="20"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+            >
+              <path d="M9 12l2 2 4-4"></path>
+              <path d="M21 12c-1 0-3-1-3-3s2-3 3-3 3 1 3 3-2 3-3 3z"></path>
+              <path d="M3 12c1 0 3-1 3-3s-2-3-3-3-3 1-3 3 2 3 3 3z"></path>
+            </svg>
+            <h3
+              style={{
+                margin: 0,
+                fontSize: "16px",
+                fontWeight: "600",
+                color: "#374151",
+              }}
+            >
+              View All Entries
+            </h3>
+          </div>
+          <p style={{ margin: 0, fontSize: "14px", color: "#6b7280" }}>
+            Browse all existing entries in this database
+          </p>
+        </div>
+
+        <div
+          style={{
+            padding: "20px",
+            border: "1px solid #e5e7eb",
+            borderRadius: "12px",
+            background: activeAction === "viewOUs" ? "#dbeafe" : "#f8fafc",
+            cursor: "pointer",
+            transition: "all 0.2s ease",
+          }}
+          onMouseOver={(e) => {
+            if (activeAction !== "viewOUs") {
+              e.currentTarget.style.background = "#f1f5f9";
+              e.currentTarget.style.borderColor = "#cbd5e1";
+            }
+          }}
+          onMouseOut={(e) => {
+            if (activeAction !== "viewOUs") {
+              e.currentTarget.style.background = "#f8fafc";
+              e.currentTarget.style.borderColor = "#e5e7eb";
+            }
+          }}
+          onClick={() => {
+            setFilter("(objectClass=organizationalUnit)");
+            setActiveAction("viewOUs");
+            onSearch(new Event("submit") as unknown as React.FormEvent);
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "12px",
+              marginBottom: "8px",
+            }}
+          >
+            <svg
+              width="20"
+              height="20"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+            >
+              <path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"></path>
+            </svg>
+            <h3
+              style={{
+                margin: 0,
+                fontSize: "16px",
+                fontWeight: "600",
+                color: "#374151",
+              }}
+            >
+              View OUs Only
+            </h3>
+          </div>
+          <p style={{ margin: 0, fontSize: "14px", color: "#6b7280" }}>
+            Show only organizational units
+          </p>
+        </div>
+
+        <div
+          style={{
+            padding: "20px",
+            border: "1px solid #e5e7eb",
+            borderRadius: "12px",
+            background: activeAction === "addNew" ? "#dbeafe" : "#f8fafc",
+            cursor: "pointer",
+            transition: "all 0.2s ease",
+          }}
+          onMouseOver={(e) => {
+            if (activeAction !== "addNew") {
+              e.currentTarget.style.background = "#f1f5f9";
+              e.currentTarget.style.borderColor = "#cbd5e1";
+            }
+          }}
+          onMouseOut={(e) => {
+            if (activeAction !== "addNew") {
+              e.currentTarget.style.background = "#f8fafc";
+              e.currentTarget.style.borderColor = "#e5e7eb";
+            }
+          }}
+          onClick={() => {
+            setShowAddForm(true);
+            setActiveAction("addNew");
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "12px",
+              marginBottom: "8px",
+            }}
+          >
+            <svg
+              width="20"
+              height="20"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+            >
+              <line x1="12" y1="5" x2="12" y2="19"></line>
+              <line x1="5" y1="12" x2="19" y2="12"></line>
+            </svg>
+            <h3
+              style={{
+                margin: 0,
+                fontSize: "16px",
+                fontWeight: "600",
+                color: "#374151",
+              }}
+            >
+              Add New Entry
+            </h3>
+          </div>
+          <p style={{ margin: 0, fontSize: "14px", color: "#6b7280" }}>
+            Create new organizational units or users
+          </p>
+        </div>
+      </div>
+
+      {entries && (
+        <div
+          style={{
+            border: "1px solid #e5e7eb",
+            borderRadius: "12px",
+            background: "#fff",
+            overflow: "hidden",
+          }}
+        >
+          <div
+            style={{
+              padding: "20px",
+              borderBottom: "1px solid #e5e7eb",
+              background: "#fafafa",
+            }}
+          >
+            <h3
+              style={{
+                margin: 0,
+                fontSize: "18px",
+                fontWeight: "600",
+                color: "#374151",
+              }}
+            >
+              Search Results ({entries.length} entries)
+            </h3>
+          </div>
+          <div style={{ padding: "20px" }}>
+            {entries.map((entry, index) => (
+              <div
+                key={index}
+                style={{
+                  padding: "16px",
+                  border: "1px solid #e5e7eb",
+                  borderRadius: "8px",
+                  marginBottom: "12px",
+                  background: "#f9fafb",
+                }}
+              >
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    marginBottom: "8px",
+                  }}
+                >
+                  <strong style={{ color: "#374151" }}>{entry.dn}</strong>
+                  <div style={{ display: "flex", gap: "8px" }}>
+                    <button
+                      style={{
+                        padding: "6px 12px",
+                        borderRadius: "4px",
+                        border: "none",
+                        background: "#3b82f6",
+                        color: "#fff",
+                        cursor: "pointer",
+                        fontSize: "12px",
+                      }}
+                    >
+                      Edit
+                    </button>
+                    <button
+                      style={{
+                        padding: "6px 12px",
+                        borderRadius: "4px",
+                        border: "none",
+                        background: "#ef4444",
+                        color: "#fff",
+                        cursor: "pointer",
+                        fontSize: "12px",
+                      }}
+                    >
+                      Delete
+                    </button>
+                  </div>
+                </div>
+                <pre
+                  style={{
+                    margin: 0,
+                    fontSize: "12px",
+                    color: "#6b7280",
+                    whiteSpace: "pre-wrap",
+                  }}
+                >
+                  {JSON.stringify(entry, null, 2)}
+                </pre>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

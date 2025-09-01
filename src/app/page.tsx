@@ -127,7 +127,13 @@ export default function Home() {
             "✅ [DEBUG] Connection already saved, redirecting to browse"
           );
           // Store connection in sessionStorage and redirect
-          const sessionData = { url, bindDN, password, insecure };
+          const sessionData = {
+            url,
+            bindDN,
+            password,
+            insecure,
+            baseDN: "dc=dcm4che,dc=org",
+          };
           console.log("💾 [DEBUG] Saving to sessionStorage:", {
             ...sessionData,
             password: "***",
@@ -176,7 +182,13 @@ export default function Home() {
       // Store connection in sessionStorage and redirect
       sessionStorage.setItem(
         "ldapConnection",
-        JSON.stringify({ url, bindDN, password, insecure })
+        JSON.stringify({
+          url,
+          bindDN,
+          password,
+          insecure,
+          baseDN: "dc=dcm4che,dc=org",
+        })
       );
       window.location.href = "/browse";
     }
@@ -187,7 +199,13 @@ export default function Home() {
     setShowSavePrompt(false);
 
     // Store connection in sessionStorage and redirect
-    const sessionData = { url, bindDN, password, insecure };
+    const sessionData = {
+      url,
+      bindDN,
+      password,
+      insecure,
+      baseDN: "dc=dcm4che,dc=org",
+    };
     console.log("💾 [DEBUG] Saving to sessionStorage:", {
       ...sessionData,
       password: "***",
