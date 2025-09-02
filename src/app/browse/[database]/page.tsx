@@ -147,7 +147,7 @@ export default function DatabasePage({
       <div style={{ padding: "40px", textAlign: "center" }}>
         <h2>Connection Required</h2>
         <p>Please connect to an LDAP server first.</p>
-        <Link href="/" style={{ color: "#3b82f6", textDecoration: "none" }}>
+        <Link href="/" style={{ color: "#0051c9", textDecoration: "none" }}>
           Go to Connect Page
         </Link>
       </div>
@@ -232,20 +232,22 @@ export default function DatabasePage({
             padding: "20px",
             border: "1px solid #e5e7eb",
             borderRadius: "12px",
-            background: activeAction === "viewAll" ? "#dbeafe" : "#f8fafc",
+            background: activeAction === "viewAll" ? "#0051c9" : "#f8fafc",
             cursor: "pointer",
-            transition: "all 0.2s ease",
+            transition: "all 0.3s cubic-bezier(0.4, 0, 0.2, 1)",
           }}
           onMouseOver={(e) => {
             if (activeAction !== "viewAll") {
               e.currentTarget.style.background = "#f1f5f9";
               e.currentTarget.style.borderColor = "#cbd5e1";
+              e.currentTarget.style.transform = "translateY(-1px)";
             }
           }}
           onMouseOut={(e) => {
             if (activeAction !== "viewAll") {
               e.currentTarget.style.background = "#f8fafc";
               e.currentTarget.style.borderColor = "#e5e7eb";
+              e.currentTarget.style.transform = "translateY(0)";
             }
           }}
           onClick={() => {
@@ -267,7 +269,7 @@ export default function DatabasePage({
               height="20"
               viewBox="0 0 24 24"
               fill="none"
-              stroke="currentColor"
+              stroke={activeAction === "viewAll" ? "#ffffff" : "currentColor"}
               strokeWidth="2"
             >
               <path d="M9 12l2 2 4-4"></path>
@@ -279,13 +281,19 @@ export default function DatabasePage({
                 margin: 0,
                 fontSize: "16px",
                 fontWeight: "600",
-                color: "#374151",
+                color: activeAction === "viewAll" ? "#ffffff" : "#374151",
               }}
             >
               View All Entries
             </h3>
           </div>
-          <p style={{ margin: 0, fontSize: "14px", color: "#6b7280" }}>
+          <p
+            style={{
+              margin: 0,
+              fontSize: "14px",
+              color: activeAction === "viewAll" ? "#e5e7eb" : "#6b7280",
+            }}
+          >
             Browse all existing entries in this database
           </p>
         </div>
@@ -295,20 +303,22 @@ export default function DatabasePage({
             padding: "20px",
             border: "1px solid #e5e7eb",
             borderRadius: "12px",
-            background: activeAction === "viewOUs" ? "#dbeafe" : "#f8fafc",
+            background: activeAction === "viewOUs" ? "#0051c9" : "#f8fafc",
             cursor: "pointer",
-            transition: "all 0.2s ease",
+            transition: "all 0.3s cubic-bezier(0.4, 0, 0.2, 1)",
           }}
           onMouseOver={(e) => {
             if (activeAction !== "viewOUs") {
               e.currentTarget.style.background = "#f1f5f9";
               e.currentTarget.style.borderColor = "#cbd5e1";
+              e.currentTarget.style.transform = "translateY(-1px)";
             }
           }}
           onMouseOut={(e) => {
             if (activeAction !== "viewOUs") {
               e.currentTarget.style.background = "#f8fafc";
               e.currentTarget.style.borderColor = "#e5e7eb";
+              e.currentTarget.style.transform = "translateY(0)";
             }
           }}
           onClick={() => {
@@ -330,7 +340,7 @@ export default function DatabasePage({
               height="20"
               viewBox="0 0 24 24"
               fill="none"
-              stroke="currentColor"
+              stroke={activeAction === "viewOUs" ? "#ffffff" : "currentColor"}
               strokeWidth="2"
             >
               <path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"></path>
@@ -340,13 +350,19 @@ export default function DatabasePage({
                 margin: 0,
                 fontSize: "16px",
                 fontWeight: "600",
-                color: "#374151",
+                color: activeAction === "viewOUs" ? "#ffffff" : "#374151",
               }}
             >
               View OUs Only
             </h3>
           </div>
-          <p style={{ margin: 0, fontSize: "14px", color: "#6b7280" }}>
+          <p
+            style={{
+              margin: 0,
+              fontSize: "14px",
+              color: activeAction === "viewOUs" ? "#e5e7eb" : "#6b7280",
+            }}
+          >
             Show only organizational units
           </p>
         </div>
@@ -356,20 +372,22 @@ export default function DatabasePage({
             padding: "20px",
             border: "1px solid #e5e7eb",
             borderRadius: "12px",
-            background: activeAction === "addNew" ? "#dbeafe" : "#f8fafc",
+            background: activeAction === "addNew" ? "#0051c9" : "#f8fafc",
             cursor: "pointer",
-            transition: "all 0.2s ease",
+            transition: "all 0.3s cubic-bezier(0.4, 0, 0.2, 1)",
           }}
           onMouseOver={(e) => {
             if (activeAction !== "addNew") {
               e.currentTarget.style.background = "#f1f5f9";
               e.currentTarget.style.borderColor = "#cbd5e1";
+              e.currentTarget.style.transform = "translateY(-1px)";
             }
           }}
           onMouseOut={(e) => {
             if (activeAction !== "addNew") {
               e.currentTarget.style.background = "#f8fafc";
               e.currentTarget.style.borderColor = "#e5e7eb";
+              e.currentTarget.style.transform = "translateY(0)";
             }
           }}
           onClick={() => {
@@ -390,7 +408,7 @@ export default function DatabasePage({
               height="20"
               viewBox="0 0 24 24"
               fill="none"
-              stroke="currentColor"
+              stroke={activeAction === "addNew" ? "#ffffff" : "currentColor"}
               strokeWidth="2"
             >
               <line x1="12" y1="5" x2="12" y2="19"></line>
@@ -401,13 +419,19 @@ export default function DatabasePage({
                 margin: 0,
                 fontSize: "16px",
                 fontWeight: "600",
-                color: "#374151",
+                color: activeAction === "addNew" ? "#ffffff" : "#374151",
               }}
             >
               Add New Entry
             </h3>
           </div>
-          <p style={{ margin: 0, fontSize: "14px", color: "#6b7280" }}>
+          <p
+            style={{
+              margin: 0,
+              fontSize: "14px",
+              color: activeAction === "addNew" ? "#e5e7eb" : "#6b7280",
+            }}
+          >
             Create new organizational units or users
           </p>
         </div>
@@ -467,7 +491,7 @@ export default function DatabasePage({
                         padding: "6px 12px",
                         borderRadius: "4px",
                         border: "none",
-                        background: "#3b82f6",
+                        background: "#0051c9",
                         color: "#fff",
                         cursor: "pointer",
                         fontSize: "12px",
