@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
 import { use } from "react";
 
@@ -21,14 +21,64 @@ export default function DatabasePage({
   const [entries, setEntries] = useState<LdapEntry[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [filter, setFilter] = useState("(objectClass=*)");
+
+  const [activeAction, setActiveAction] = useState<string>("");
+  const [isSearching, setIsSearching] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [newDn, setNewDn] = useState("");
   const [newAttrs, setNewAttrs] = useState("");
-  const [showAddForm, setShowAddForm] = useState(false);
-  const [activeAction, setActiveAction] = useState<string>("");
+  const [editingEntry, setEditingEntry] = useState<LdapEntry | null>(null);
+  const [editAttrs, setEditAttrs] = useState("");
 
   const resolvedParams = use(params);
   const databaseName = decodeURIComponent(resolvedParams.database);
+
+  const loadDatabaseEntries = useCallback(
+    async (
+      ldapUrl: string,
+      ldapBindDN: string,
+      ldapPassword: string,
+      ldapInsecure: boolean
+    ) => {
+      setLoading(true);
+      setError(null);
+
+      try {
+        const searchPayload = {
+          url: ldapUrl,
+          bindDN: ldapBindDN,
+          password: ldapPassword,
+          baseDN: databaseName,
+          filter: "(objectClass=*)",
+          tls: ldapInsecure ? { rejectUnauthorized: false } : undefined,
+        };
+
+        const res = await fetch("/api/ldap/search", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(searchPayload),
+        });
+
+        if (!res.ok) {
+          const errorData = await res.json();
+          throw new Error(errorData?.error || res.statusText);
+        }
+
+        const data = await res.json();
+        if (data?.ok && data.entries) {
+          setEntries(data.entries);
+        } else {
+          setEntries([]);
+        }
+      } catch (e) {
+        setError((e as Error).message);
+        setEntries([]);
+      } finally {
+        setLoading(false);
+      }
+    },
+    [databaseName]
+  );
 
   useEffect(() => {
     const connectionData = sessionStorage.getItem("ldapConnection");
@@ -52,59 +102,16 @@ export default function DatabasePage({
         console.error("Failed to parse connection data:", e);
       }
     }
-  }, [databaseName]);
+  }, [databaseName, loadDatabaseEntries]);
 
-  const loadDatabaseEntries = async (
-    ldapUrl: string,
-    ldapBindDN: string,
-    ldapPassword: string,
-    ldapInsecure: boolean
-  ) => {
-    setLoading(true);
-    setError(null);
-
-    try {
-      const searchPayload = {
-        url: ldapUrl,
-        bindDN: ldapBindDN,
-        password: ldapPassword,
-        baseDN: databaseName,
-        filter: "(objectClass=*)",
-        tls: ldapInsecure ? { rejectUnauthorized: false } : undefined,
-      };
-
-      const res = await fetch("/api/ldap/search", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(searchPayload),
-      });
-
-      if (!res.ok) {
-        const errorData = await res.json();
-        throw new Error(errorData?.error || res.statusText);
-      }
-
-      const data = await res.json();
-      if (data?.ok && data.entries) {
-        setEntries(data.entries);
-      } else {
-        setEntries([]);
-      }
-    } catch (e) {
-      setError((e as Error).message);
-      setEntries([]);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const onSearch = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const performSearch = async (chosenFilter: string) => {
+    if (isSearching || loading) return;
     if (!url || !bindDN || !password) {
       setError("Missing connection details");
       return;
     }
 
+    setIsSearching(true);
     setLoading(true);
     setError(null);
 
@@ -114,7 +121,7 @@ export default function DatabasePage({
         bindDN,
         password,
         baseDN: databaseName,
-        filter: filter || "(objectClass=*)",
+        filter: chosenFilter || "(objectClass=*)",
         tls: insecure ? { rejectUnauthorized: false } : undefined,
       };
 
@@ -139,6 +146,168 @@ export default function DatabasePage({
       setError((e as Error).message);
     } finally {
       setLoading(false);
+      setIsSearching(false);
+    }
+  };
+
+  const refreshAfterAction = async () => {
+    const f =
+      activeAction === "viewOUs"
+        ? "(objectClass=organizationalUnit)"
+        : "(objectClass=*)";
+    await performSearch(f);
+  };
+
+  const sanitizeAttributes = (
+    raw: Record<string, unknown>
+  ): Record<string, string | string[]> => {
+    const cleaned: Record<string, string | string[]> = {};
+    for (const [keyRaw, valueRaw] of Object.entries(raw)) {
+      const key = String(keyRaw).trim();
+      if (!key || key.toLowerCase() === "dn") continue; // DN must not be in attributes
+      if (valueRaw === undefined || valueRaw === null) continue;
+      if (Array.isArray(valueRaw)) {
+        cleaned[key] = valueRaw.map((v) => String(v));
+      } else {
+        cleaned[key] = [String(valueRaw)];
+      }
+    }
+    return cleaned;
+  };
+
+  const openEdit = (entry: LdapEntry) => {
+    setEditingEntry(entry);
+    const clone = { ...entry } as Record<string, unknown>;
+    delete (clone as Record<string, unknown>).dn;
+    setEditAttrs(JSON.stringify(clone, null, 2));
+  };
+
+  const handleSaveEdit = async () => {
+    if (!editingEntry) return;
+    if (isSubmitting) return;
+    let attrs: Record<string, unknown>;
+    try {
+      attrs = JSON.parse(editAttrs || "{}");
+    } catch {
+      setError("Edited attributes must be valid JSON");
+      return;
+    }
+    const changes = Object.entries(attrs)
+      .filter(([attribute]) => attribute.toLowerCase() !== "dn")
+      .map(([attribute, value]) => ({
+        type: "replace" as const,
+        attribute,
+        values: Array.isArray(value) ? (value as unknown[]) : [value],
+      }));
+    setIsSubmitting(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/ldap/modify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          url,
+          bindDN,
+          password,
+          entryDN: editingEntry.dn,
+          changes,
+          tls: insecure ? { rejectUnauthorized: false } : undefined,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data?.ok) throw new Error(data?.error || res.statusText);
+      setEditingEntry(null);
+      setEditAttrs("");
+      await refreshAfterAction();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleDelete = async (entryDn: string) => {
+    if (isSubmitting) return;
+    setIsSubmitting(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/ldap/delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          url,
+          bindDN,
+          password,
+          entryDN: entryDn,
+          tls: insecure ? { rejectUnauthorized: false } : undefined,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data?.ok) throw new Error(data?.error || res.statusText);
+      await refreshAfterAction();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleAdd = async () => {
+    if (isSubmitting) return;
+    if (!url || !bindDN || !password) {
+      setError("Missing connection details");
+      return;
+    }
+    if (!newDn.trim()) {
+      setError("Please provide DN for the new entry");
+      return;
+    }
+    let attrs: Record<string, string | string[]>;
+    try {
+      const parsed = JSON.parse(newAttrs || "{}") as Record<string, unknown>;
+      attrs = sanitizeAttributes(parsed);
+    } catch (e) {
+      setError("Attributes must be valid JSON");
+      return;
+    }
+    setIsSubmitting(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/ldap/add", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          url,
+          bindDN,
+          password,
+          entryDN: newDn.trim(),
+          attributes: attrs,
+          tls: insecure ? { rejectUnauthorized: false } : undefined,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data?.ok) throw new Error(data?.error || res.statusText);
+      const addedDn = newDn.trim();
+      setNewDn("");
+      setNewAttrs("");
+      // If the added DN is not under current base, navigate to its base so it becomes visible
+      const currentBase = databaseName.toLowerCase();
+      const isUnderCurrent = addedDn.toLowerCase().endsWith(currentBase);
+      if (!isUnderCurrent) {
+        const parts = addedDn.split(/,(.+)/); // [RDN, rest]
+        if (parts.length === 2 && parts[1]) {
+          const newBase = parts[1];
+          if (typeof window !== "undefined") {
+            window.location.href = `/browse/${encodeURIComponent(newBase)}`;
+            return;
+          }
+        }
+      }
+      await refreshAfterAction();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -251,9 +420,9 @@ export default function DatabasePage({
             }
           }}
           onClick={() => {
-            setFilter("(objectClass=*)");
+            const f = "(objectClass=*)";
             setActiveAction("viewAll");
-            onSearch(new Event("submit") as unknown as React.FormEvent);
+            performSearch(f);
           }}
         >
           <div
@@ -322,9 +491,9 @@ export default function DatabasePage({
             }
           }}
           onClick={() => {
-            setFilter("(objectClass=organizationalUnit)");
+            const f = "(objectClass=organizationalUnit)";
             setActiveAction("viewOUs");
-            onSearch(new Event("submit") as unknown as React.FormEvent);
+            performSearch(f);
           }}
         >
           <div
@@ -391,7 +560,6 @@ export default function DatabasePage({
             }
           }}
           onClick={() => {
-            setShowAddForm(true);
             setActiveAction("addNew");
           }}
         >
@@ -436,6 +604,66 @@ export default function DatabasePage({
           </p>
         </div>
       </div>
+
+      {activeAction === "addNew" && (
+        <div
+          style={{
+            border: "1px solid #e5e7eb",
+            borderRadius: "12px",
+            background: "#fff",
+            padding: "20px",
+            marginBottom: "24px",
+          }}
+        >
+          <h3 style={{ margin: "0 0 12px 0", color: "#111827" }}>
+            Add New Entry
+          </h3>
+          <div style={{ display: "grid", gap: "12px" }}>
+            <input
+              placeholder="Entry DN (e.g., ou=NewOU,dc=example,dc=com)"
+              value={newDn}
+              onChange={(e) => setNewDn(e.target.value)}
+              style={{
+                padding: "10px 12px",
+                border: "1px solid #e5e7eb",
+                borderRadius: "8px",
+                fontSize: "14px",
+              }}
+            />
+            <textarea
+              placeholder='Attributes JSON, e.g. {"objectClass":["top","organizationalUnit"],"ou":"NewOU"}'
+              value={newAttrs}
+              onChange={(e) => setNewAttrs(e.target.value)}
+              rows={6}
+              style={{
+                padding: "10px 12px",
+                border: "1px solid #e5e7eb",
+                borderRadius: "8px",
+                fontSize: "13px",
+                fontFamily:
+                  'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, \\"Liberation Mono\\", \\"Courier New\\", monospace',
+              }}
+            />
+            <div>
+              <button
+                onClick={handleAdd}
+                disabled={isSubmitting}
+                style={{
+                  padding: "10px 14px",
+                  borderRadius: "8px",
+                  border: "none",
+                  background: "#0051c9",
+                  color: "#fff",
+                  cursor: "pointer",
+                  fontSize: "14px",
+                }}
+              >
+                {isSubmitting ? "Adding..." : "Add Entry"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {entries && (
         <div
@@ -487,6 +715,7 @@ export default function DatabasePage({
                   <strong style={{ color: "#374151" }}>{entry.dn}</strong>
                   <div style={{ display: "flex", gap: "8px" }}>
                     <button
+                      onClick={() => openEdit(entry)}
                       style={{
                         padding: "6px 12px",
                         borderRadius: "4px",
@@ -500,6 +729,7 @@ export default function DatabasePage({
                       Edit
                     </button>
                     <button
+                      onClick={() => handleDelete(entry.dn)}
                       style={{
                         padding: "6px 12px",
                         borderRadius: "4px",
@@ -526,6 +756,73 @@ export default function DatabasePage({
                 </pre>
               </div>
             ))}
+          </div>
+        </div>
+      )}
+
+      {editingEntry && (
+        <div
+          style={{
+            border: "1px solid #e5e7eb",
+            borderRadius: "12px",
+            background: "#fff",
+            padding: "20px",
+            marginTop: "16px",
+          }}
+        >
+          <h3 style={{ margin: "0 0 12px 0", color: "#111827" }}>Edit Entry</h3>
+          <div
+            style={{ marginBottom: "8px", color: "#374151", fontSize: "14px" }}
+          >
+            {editingEntry.dn}
+          </div>
+          <textarea
+            value={editAttrs}
+            onChange={(e) => setEditAttrs(e.target.value)}
+            rows={8}
+            style={{
+              width: "100%",
+              padding: "10px 12px",
+              border: "1px solid #e5e7eb",
+              borderRadius: "8px",
+              fontSize: "13px",
+              fontFamily:
+                'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, \\"Liberation Mono\\", \\"Courier New\\", monospace',
+            }}
+          />
+          <div style={{ display: "flex", gap: "8px", marginTop: "12px" }}>
+            <button
+              onClick={handleSaveEdit}
+              disabled={isSubmitting}
+              style={{
+                padding: "10px 14px",
+                borderRadius: "8px",
+                border: "none",
+                background: "#0051c9",
+                color: "#fff",
+                cursor: "pointer",
+                fontSize: "14px",
+              }}
+            >
+              {isSubmitting ? "Saving..." : "Save Changes"}
+            </button>
+            <button
+              onClick={() => {
+                setEditingEntry(null);
+                setEditAttrs("");
+              }}
+              style={{
+                padding: "10px 14px",
+                borderRadius: "8px",
+                border: "1px solid #e5e7eb",
+                background: "#fff",
+                color: "#374151",
+                cursor: "pointer",
+                fontSize: "14px",
+              }}
+            >
+              Cancel
+            </button>
           </div>
         </div>
       )}
