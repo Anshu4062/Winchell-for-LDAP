@@ -270,9 +270,57 @@ export default function DatabasePage({
       setError("Attributes must be valid JSON");
       return;
     }
+
+    // Require objectClass for new entries
+    const hasObjectClass = Object.keys(attrs).some(
+      (k) => k.toLowerCase() === "objectclass"
+    );
+    if (!hasObjectClass) {
+      setError("Attributes must include objectClass");
+      return;
+    }
+
+    // Determine parent DN and ensure it exists to avoid LDAP 0x35 errors
+    const dnTrimmed = newDn.trim();
+    // Compute parent DN by taking everything after the first unescaped comma
+    // Handles extra spaces after the comma as well.
+    const firstCommaIndex = dnTrimmed.indexOf(",");
+    const parentDn =
+      firstCommaIndex >= 0 ? dnTrimmed.slice(firstCommaIndex + 1).trim() : "";
+    if (!parentDn) {
+      setError(
+        "Unable to determine parent DN. Provide a DN with a parent, e.g., cn=John,ou=People,dc=example,dc=com"
+      );
+      return;
+    }
     setIsSubmitting(true);
     setError(null);
     try {
+      // Verify parent entry exists
+      const parentCheck = await fetch("/api/ldap/search", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          url,
+          bindDN,
+          password,
+          baseDN: parentDn,
+          scope: "base",
+          filter: "(objectClass=*)",
+          tls: insecure ? { rejectUnauthorized: false } : undefined,
+        }),
+      });
+      const parentData = await parentCheck.json();
+      if (
+        !parentCheck.ok ||
+        !parentData?.ok ||
+        parentData?.entries?.length !== 1
+      ) {
+        throw new Error(
+          `Parent DN not found: ${parentDn}. Create the parent entry first.`
+        );
+      }
+
       const res = await fetch("/api/ldap/add", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -280,7 +328,7 @@ export default function DatabasePage({
           url,
           bindDN,
           password,
-          entryDN: newDn.trim(),
+          entryDN: dnTrimmed,
           attributes: attrs,
           tls: insecure ? { rejectUnauthorized: false } : undefined,
         }),
