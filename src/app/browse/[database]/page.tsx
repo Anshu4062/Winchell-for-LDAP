@@ -29,6 +29,55 @@ export default function DatabasePage({
   const [newAttrs, setNewAttrs] = useState("");
   const [editingEntry, setEditingEntry] = useState<LdapEntry | null>(null);
   const [editAttrs, setEditAttrs] = useState("");
+  const [showQuickAddModal, setShowQuickAddModal] = useState(false);
+  const [showJsonDetails, setShowJsonDetails] = useState(false);
+  const [quickAddData, setQuickAddData] = useState({
+    cn: "",
+    hostname: "",
+    port: "",
+    tlsCipherSuites: ["TLS_RSA_WITH_AES_128_CBC_SHA"],
+    noTls: false,
+    clientBindAddress: "0.0.0.0",
+    bindAddress: "0.0.0.0",
+    maxOpsInvoked: "0",
+    maxOpsPerformed: "0",
+  });
+
+  const tlsCipherSuiteOptions = [
+    "SSL_RSA_WITH_3DES_EDE_CBC_SHA",
+    "SSL_RSA_WITH_NULL_SHA",
+    "TLS_DHE_RSA_WITH_AES_128_GCM_SHA256",
+    "TLS_DHE_RSA_WITH_AES_256_GCM_SHA384",
+    "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
+    "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384",
+    "TLS_RSA_WITH_AES_128_CBC_SHA",
+  ];
+
+  const isDicomPortEntry = (entry: LdapEntry): boolean => {
+    return entry.dicomPort !== undefined && entry.dicomHostname !== undefined;
+  };
+
+  const formatDicomEntry = (entry: LdapEntry) => {
+    const cn = String(entry.cn || "Unknown");
+    const hostname = String(entry.dicomHostname || "Not specified");
+    const port = String(entry.dicomPort || "Not specified");
+    const deviceName = String(entry.dicomDeviceName || "Unknown Device");
+
+    return {
+      name: cn,
+      hostname,
+      port,
+      deviceName,
+      hasTls:
+        entry.dicomTLSCipherSuite &&
+        Array.isArray(entry.dicomTLSCipherSuite) &&
+        entry.dicomTLSCipherSuite.length > 0,
+      clientBindAddress: String(entry.dcmClientBindAddress || "0.0.0.0"),
+      bindAddress: String(entry.dcmBindAddress || "0.0.0.0"),
+      maxOpsInvoked: String(entry.dcmMaxOpsInvoked || "0"),
+      maxOpsPerformed: String(entry.dcmMaxOpsPerformed || "0"),
+    };
+  };
 
   const resolvedParams = use(params);
   const databaseName = decodeURIComponent(resolvedParams.database);
@@ -151,10 +200,12 @@ export default function DatabasePage({
   };
 
   const refreshAfterAction = async () => {
-    const f =
-      activeAction === "viewOUs"
-        ? "(objectClass=organizationalUnit)"
-        : "(objectClass=*)";
+    let f = "(objectClass=*)";
+    if (activeAction === "viewOUs") {
+      f = "(objectClass=organizationalUnit)";
+    } else if (activeAction === "viewDicomPorts") {
+      f = "(dicomPort=*)";
+    }
     await performSearch(f);
   };
 
@@ -252,6 +303,98 @@ export default function DatabasePage({
     }
   };
 
+  const handleQuickAdd = async () => {
+    if (isSubmitting) return;
+    if (!url || !bindDN || !password) {
+      setError("Missing connection details");
+      return;
+    }
+    if (!quickAddData.cn.trim()) {
+      setError("Please provide a name (cn) for the new connection");
+      return;
+    }
+
+    const dn = `cn=${quickAddData.cn.trim()},dicomDeviceName=dcm4chee-arc,cn=Devices,cn=DICOM Configuration,dc=dcm4che,dc=org`;
+    const attrs: Record<string, string | string[]> = {
+      objectClass: ["dicomNetworkConnection", "dcmNetworkConnection"],
+      cn: quickAddData.cn.trim(),
+      dicomHostname: quickAddData.hostname,
+      dicomPort: quickAddData.port,
+      dcmClientBindAddress: quickAddData.clientBindAddress,
+      dcmBindAddress: quickAddData.bindAddress,
+      dcmMaxOpsInvoked: quickAddData.maxOpsInvoked,
+      dcmMaxOpsPerformed: quickAddData.maxOpsPerformed,
+    };
+
+    // Only add dicomTLSCipherSuite if there are selected cipher suites and noTls is false
+    if (!quickAddData.noTls && quickAddData.tlsCipherSuites.length > 0) {
+      attrs.dicomTLSCipherSuite = quickAddData.tlsCipherSuites;
+    }
+
+    // Check parent exists
+    const parentDn = `dicomDeviceName=dcm4chee-arc,cn=Devices,cn=DICOM Configuration,dc=dcm4che,dc=org`;
+    setIsSubmitting(true);
+    setError(null);
+    try {
+      const parentCheck = await fetch("/api/ldap/search", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          url,
+          bindDN,
+          password,
+          baseDN: parentDn,
+          scope: "base",
+          filter: "(objectClass=*)",
+          tls: insecure ? { rejectUnauthorized: false } : undefined,
+        }),
+      });
+      const parentData = await parentCheck.json();
+      if (
+        !parentCheck.ok ||
+        !parentData?.ok ||
+        parentData?.entries?.length !== 1
+      ) {
+        throw new Error(
+          `Parent DN not found: ${parentDn}. Create the parent entry first.`
+        );
+      }
+
+      const res = await fetch("/api/ldap/add", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          url,
+          bindDN,
+          password,
+          entryDN: dn,
+          attributes: attrs,
+          tls: insecure ? { rejectUnauthorized: false } : undefined,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data?.ok) throw new Error(data?.error || res.statusText);
+
+      setShowQuickAddModal(false);
+      setQuickAddData({
+        cn: "",
+        hostname: "localhost",
+        port: "11112",
+        tlsCipherSuites: ["TLS_RSA_WITH_AES_128_CBC_SHA"],
+        noTls: false,
+        clientBindAddress: "0.0.0.0",
+        bindAddress: "0.0.0.0",
+        maxOpsInvoked: "0",
+        maxOpsPerformed: "0",
+      });
+      await refreshAfterAction();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
   const handleAdd = async () => {
     if (isSubmitting) return;
     if (!url || !bindDN || !password) {
@@ -266,7 +409,7 @@ export default function DatabasePage({
     try {
       const parsed = JSON.parse(newAttrs || "{}") as Record<string, unknown>;
       attrs = sanitizeAttributes(parsed);
-    } catch (e) {
+    } catch {
       setError("Attributes must be valid JSON");
       return;
     }
@@ -651,6 +794,142 @@ export default function DatabasePage({
             Create new organizational units or users
           </p>
         </div>
+
+        <div
+          style={{
+            padding: "20px",
+            border: "1px solid #e5e7eb",
+            borderRadius: "12px",
+            background:
+              activeAction === "viewDicomPorts" ? "#0051c9" : "#f8fafc",
+            cursor: "pointer",
+            transition: "all 0.3s cubic-bezier(0.4, 0, 0.2, 1)",
+          }}
+          onMouseOver={(e) => {
+            if (activeAction !== "viewDicomPorts") {
+              e.currentTarget.style.background = "#f1f5f9";
+              e.currentTarget.style.borderColor = "#cbd5e1";
+              e.currentTarget.style.transform = "translateY(-1px)";
+            }
+          }}
+          onMouseOut={(e) => {
+            if (activeAction !== "viewDicomPorts") {
+              e.currentTarget.style.background = "#f8fafc";
+              e.currentTarget.style.borderColor = "#e5e7eb";
+              e.currentTarget.style.transform = "translateY(0)";
+            }
+          }}
+          onClick={() => {
+            const f = "(dicomPort=*)";
+            setActiveAction("viewDicomPorts");
+            performSearch(f);
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "12px",
+              marginBottom: "8px",
+            }}
+          >
+            <svg
+              width="20"
+              height="20"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke={
+                activeAction === "viewDicomPorts" ? "#ffffff" : "currentColor"
+              }
+              strokeWidth="2"
+            >
+              <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"></path>
+            </svg>
+            <h3
+              style={{
+                margin: 0,
+                fontSize: "16px",
+                fontWeight: "600",
+                color:
+                  activeAction === "viewDicomPorts" ? "#ffffff" : "#374151",
+              }}
+            >
+              View DICOM Port Entries
+            </h3>
+          </div>
+          <p
+            style={{
+              margin: 0,
+              fontSize: "14px",
+              color: activeAction === "viewDicomPorts" ? "#e5e7eb" : "#6b7280",
+            }}
+          >
+            Show entries with DICOM port configuration
+          </p>
+        </div>
+
+        <div
+          style={{
+            padding: "20px",
+            border: "1px solid #e5e7eb",
+            borderRadius: "12px",
+            background: "#f8fafc",
+            cursor: "pointer",
+            transition: "all 0.3s cubic-bezier(0.4, 0, 0.2, 1)",
+          }}
+          onMouseOver={(e) => {
+            e.currentTarget.style.background = "#f1f5f9";
+            e.currentTarget.style.borderColor = "#cbd5e1";
+            e.currentTarget.style.transform = "translateY(-1px)";
+          }}
+          onMouseOut={(e) => {
+            e.currentTarget.style.background = "#f8fafc";
+            e.currentTarget.style.borderColor = "#e5e7eb";
+            e.currentTarget.style.transform = "translateY(0)";
+          }}
+          onClick={() => {
+            setShowQuickAddModal(true);
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "12px",
+              marginBottom: "8px",
+            }}
+          >
+            <svg
+              width="20"
+              height="20"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+            >
+              <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"></path>
+            </svg>
+            <h3
+              style={{
+                margin: 0,
+                fontSize: "16px",
+                fontWeight: "600",
+                color: "#374151",
+              }}
+            >
+              Quick Add DICOM Connection
+            </h3>
+          </div>
+          <p
+            style={{
+              margin: 0,
+              fontSize: "14px",
+              color: "#6b7280",
+            }}
+          >
+            Add DICOM network connection with form fields
+          </p>
+        </div>
       </div>
 
       {activeAction === "addNew" && (
@@ -727,6 +1006,9 @@ export default function DatabasePage({
               padding: "20px",
               borderBottom: "1px solid #e5e7eb",
               background: "#fafafa",
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
             }}
           >
             <h3
@@ -739,71 +1021,301 @@ export default function DatabasePage({
             >
               Search Results ({entries.length} entries)
             </h3>
-          </div>
-          <div style={{ padding: "20px" }}>
-            {entries.map((entry, index) => (
-              <div
-                key={index}
+            <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+              <label
                 style={{
-                  padding: "16px",
-                  border: "1px solid #e5e7eb",
-                  borderRadius: "8px",
-                  marginBottom: "12px",
-                  background: "#f9fafb",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "6px",
+                  cursor: "pointer",
                 }}
               >
+                <input
+                  type="checkbox"
+                  checked={showJsonDetails}
+                  onChange={(e) => setShowJsonDetails(e.target.checked)}
+                  style={{
+                    width: "16px",
+                    height: "16px",
+                    accentColor: "#0051c9",
+                  }}
+                />
+                <span style={{ fontSize: "14px", color: "#6b7280" }}>
+                  Show JSON Details
+                </span>
+              </label>
+            </div>
+          </div>
+          <div style={{ padding: "20px" }}>
+            {entries.map((entry, index) => {
+              const isDicom = isDicomPortEntry(entry);
+              const dicomData = isDicom ? formatDicomEntry(entry) : null;
+
+              return (
                 <div
+                  key={index}
                   style={{
-                    display: "flex",
-                    justifyContent: "space-between",
-                    alignItems: "center",
-                    marginBottom: "8px",
+                    padding: "20px",
+                    border: "1px solid #e5e7eb",
+                    borderRadius: "12px",
+                    marginBottom: "16px",
+                    background: isDicom ? "#f8fafc" : "#f9fafb",
+                    borderLeft: isDicom
+                      ? "4px solid #0051c9"
+                      : "4px solid #e5e7eb",
                   }}
                 >
-                  <strong style={{ color: "#374151" }}>{entry.dn}</strong>
-                  <div style={{ display: "flex", gap: "8px" }}>
-                    <button
-                      onClick={() => openEdit(entry)}
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "flex-start",
+                      marginBottom: isDicom ? "16px" : "8px",
+                    }}
+                  >
+                    <div style={{ flex: 1 }}>
+                      <strong style={{ color: "#374151", fontSize: "16px" }}>
+                        {entry.dn}
+                      </strong>
+                      {isDicom && dicomData && (
+                        <div style={{ marginTop: "12px" }}>
+                          <div
+                            style={{
+                              display: "grid",
+                              gridTemplateColumns:
+                                "repeat(auto-fit, minmax(200px, 1fr))",
+                              gap: "16px",
+                            }}
+                          >
+                            <div
+                              style={{
+                                display: "flex",
+                                flexDirection: "column",
+                                gap: "8px",
+                              }}
+                            >
+                              <div>
+                                <span
+                                  style={{
+                                    fontWeight: "600",
+                                    color: "#374151",
+                                    fontSize: "14px",
+                                  }}
+                                >
+                                  Connection Name:
+                                </span>
+                                <div
+                                  style={{
+                                    color: "#6b7280",
+                                    fontSize: "14px",
+                                    marginTop: "2px",
+                                  }}
+                                >
+                                  {dicomData.name}
+                                </div>
+                              </div>
+                              <div>
+                                <span
+                                  style={{
+                                    fontWeight: "600",
+                                    color: "#374151",
+                                    fontSize: "14px",
+                                  }}
+                                >
+                                  Device Name:
+                                </span>
+                                <div
+                                  style={{
+                                    color: "#6b7280",
+                                    fontSize: "14px",
+                                    marginTop: "2px",
+                                  }}
+                                >
+                                  {dicomData.deviceName}
+                                </div>
+                              </div>
+                            </div>
+                            <div
+                              style={{
+                                display: "flex",
+                                flexDirection: "column",
+                                gap: "8px",
+                              }}
+                            >
+                              <div>
+                                <span
+                                  style={{
+                                    fontWeight: "600",
+                                    color: "#374151",
+                                    fontSize: "14px",
+                                  }}
+                                >
+                                  Hostname:
+                                </span>
+                                <div
+                                  style={{
+                                    color: "#6b7280",
+                                    fontSize: "14px",
+                                    marginTop: "2px",
+                                  }}
+                                >
+                                  {dicomData.hostname}
+                                </div>
+                              </div>
+                              <div>
+                                <span
+                                  style={{
+                                    fontWeight: "600",
+                                    color: "#374151",
+                                    fontSize: "14px",
+                                  }}
+                                >
+                                  Port:
+                                </span>
+                                <div
+                                  style={{
+                                    color: "#6b7280",
+                                    fontSize: "14px",
+                                    marginTop: "2px",
+                                  }}
+                                >
+                                  {dicomData.port}
+                                </div>
+                              </div>
+                            </div>
+                            <div
+                              style={{
+                                display: "flex",
+                                flexDirection: "column",
+                                gap: "8px",
+                              }}
+                            >
+                              <div>
+                                <span
+                                  style={{
+                                    fontWeight: "600",
+                                    color: "#374151",
+                                    fontSize: "14px",
+                                  }}
+                                >
+                                  TLS Security:
+                                </span>
+                                <div
+                                  style={{
+                                    color: dicomData.hasTls
+                                      ? "#059669"
+                                      : "#dc2626",
+                                    fontSize: "14px",
+                                    marginTop: "2px",
+                                    fontWeight: "500",
+                                  }}
+                                >
+                                  {dicomData.hasTls
+                                    ? "✓ Enabled"
+                                    : "✗ Disabled"}
+                                </div>
+                              </div>
+                              <div>
+                                <span
+                                  style={{
+                                    fontWeight: "600",
+                                    color: "#374151",
+                                    fontSize: "14px",
+                                  }}
+                                >
+                                  Client Bind:
+                                </span>
+                                <div
+                                  style={{
+                                    color: "#6b7280",
+                                    fontSize: "14px",
+                                    marginTop: "2px",
+                                  }}
+                                >
+                                  {dicomData.clientBindAddress}
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                    <div
                       style={{
-                        padding: "6px 12px",
-                        borderRadius: "4px",
-                        border: "none",
-                        background: "#0051c9",
-                        color: "#fff",
-                        cursor: "pointer",
-                        fontSize: "12px",
+                        display: "flex",
+                        gap: "8px",
+                        marginLeft: "16px",
                       }}
                     >
-                      Edit
-                    </button>
-                    <button
-                      onClick={() => handleDelete(entry.dn)}
-                      style={{
-                        padding: "6px 12px",
-                        borderRadius: "4px",
-                        border: "none",
-                        background: "#ef4444",
-                        color: "#fff",
-                        cursor: "pointer",
-                        fontSize: "12px",
-                      }}
-                    >
-                      Delete
-                    </button>
+                      <button
+                        onClick={() => openEdit(entry)}
+                        style={{
+                          padding: "8px 16px",
+                          borderRadius: "6px",
+                          border: "none",
+                          background: "#0051c9",
+                          color: "#fff",
+                          cursor: "pointer",
+                          fontSize: "14px",
+                          fontWeight: "500",
+                        }}
+                      >
+                        Edit
+                      </button>
+                      <button
+                        onClick={() => handleDelete(entry.dn)}
+                        style={{
+                          padding: "8px 16px",
+                          borderRadius: "6px",
+                          border: "none",
+                          background: "#ef4444",
+                          color: "#fff",
+                          cursor: "pointer",
+                          fontSize: "14px",
+                          fontWeight: "500",
+                        }}
+                      >
+                        Delete
+                      </button>
+                    </div>
                   </div>
+
+                  {showJsonDetails && (
+                    <div
+                      style={{
+                        marginTop: "16px",
+                        padding: "12px",
+                        background: "#f3f4f6",
+                        borderRadius: "8px",
+                      }}
+                    >
+                      <div
+                        style={{
+                          marginBottom: "8px",
+                          fontSize: "12px",
+                          fontWeight: "600",
+                          color: "#374151",
+                        }}
+                      >
+                        Raw JSON Data:
+                      </div>
+                      <pre
+                        style={{
+                          margin: 0,
+                          fontSize: "12px",
+                          color: "#6b7280",
+                          whiteSpace: "pre-wrap",
+                          fontFamily:
+                            "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace",
+                        }}
+                      >
+                        {JSON.stringify(entry, null, 2)}
+                      </pre>
+                    </div>
+                  )}
                 </div>
-                <pre
-                  style={{
-                    margin: 0,
-                    fontSize: "12px",
-                    color: "#6b7280",
-                    whiteSpace: "pre-wrap",
-                  }}
-                >
-                  {JSON.stringify(entry, null, 2)}
-                </pre>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}
@@ -871,6 +1383,432 @@ export default function DatabasePage({
             >
               Cancel
             </button>
+          </div>
+        </div>
+      )}
+
+      {showQuickAddModal && (
+        <div
+          style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: "rgba(0, 0, 0, 0.5)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 1000,
+          }}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              setShowQuickAddModal(false);
+            }
+          }}
+        >
+          <div
+            style={{
+              background: "#fff",
+              borderRadius: "12px",
+              padding: "24px",
+              maxWidth: "500px",
+              width: "90%",
+              maxHeight: "80vh",
+              overflow: "auto",
+            }}
+          >
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                marginBottom: "20px",
+              }}
+            >
+              <h2 style={{ margin: 0, fontSize: "20px", fontWeight: "600" }}>
+                Quick Add DICOM Connection
+              </h2>
+              <button
+                onClick={() => setShowQuickAddModal(false)}
+                style={{
+                  background: "none",
+                  border: "none",
+                  fontSize: "24px",
+                  cursor: "pointer",
+                  color: "#6b7280",
+                }}
+              >
+                ×
+              </button>
+            </div>
+
+            <div style={{ display: "grid", gap: "16px" }}>
+              <div>
+                <label
+                  style={{
+                    display: "block",
+                    marginBottom: "4px",
+                    fontWeight: "500",
+                  }}
+                >
+                  Connection Name (cn) *
+                </label>
+                <input
+                  type="text"
+                  value={quickAddData.cn}
+                  onChange={(e) =>
+                    setQuickAddData({ ...quickAddData, cn: e.target.value })
+                  }
+                  placeholder="e.g., dicom"
+                  style={{
+                    width: "100%",
+                    padding: "8px 12px",
+                    border: "1px solid #e5e7eb",
+                    borderRadius: "6px",
+                    fontSize: "14px",
+                  }}
+                />
+              </div>
+
+              <div>
+                <label
+                  style={{
+                    display: "block",
+                    marginBottom: "4px",
+                    fontWeight: "500",
+                  }}
+                >
+                  Hostname
+                </label>
+                <input
+                  placeholder="e.g., localhost"
+                  type="text"
+                  value={quickAddData.hostname}
+                  onChange={(e) =>
+                    setQuickAddData({
+                      ...quickAddData,
+                      hostname: e.target.value,
+                    })
+                  }
+                  style={{
+                    width: "100%",
+                    padding: "8px 12px",
+                    border: "1px solid #e5e7eb",
+                    borderRadius: "6px",
+                    fontSize: "14px",
+                  }}
+                />
+              </div>
+
+              <div>
+                <label
+                  style={{
+                    display: "block",
+                    marginBottom: "4px",
+                    fontWeight: "500",
+                  }}
+                >
+                  Port
+                </label>
+                <input
+                  placeholder="e.g., 8080"
+                  type="text"
+                  value={quickAddData.port}
+                  onChange={(e) =>
+                    setQuickAddData({ ...quickAddData, port: e.target.value })
+                  }
+                  style={{
+                    width: "100%",
+                    padding: "8px 12px",
+                    border: "1px solid #e5e7eb",
+                    borderRadius: "6px",
+                    fontSize: "14px",
+                  }}
+                />
+              </div>
+
+              <div>
+                <label
+                  style={{
+                    display: "block",
+                    marginBottom: "4px",
+                    fontWeight: "500",
+                  }}
+                >
+                  Client Bind Address
+                </label>
+                <input
+                  type="text"
+                  value={quickAddData.clientBindAddress}
+                  onChange={(e) =>
+                    setQuickAddData({
+                      ...quickAddData,
+                      clientBindAddress: e.target.value,
+                    })
+                  }
+                  style={{
+                    width: "100%",
+                    padding: "8px 12px",
+                    border: "1px solid #e5e7eb",
+                    borderRadius: "6px",
+                    fontSize: "14px",
+                  }}
+                />
+              </div>
+
+              <div>
+                <label
+                  style={{
+                    display: "block",
+                    marginBottom: "4px",
+                    fontWeight: "500",
+                  }}
+                >
+                  Bind Address
+                </label>
+                <input
+                  type="text"
+                  value={quickAddData.bindAddress}
+                  onChange={(e) =>
+                    setQuickAddData({
+                      ...quickAddData,
+                      bindAddress: e.target.value,
+                    })
+                  }
+                  style={{
+                    width: "100%",
+                    padding: "8px 12px",
+                    border: "1px solid #e5e7eb",
+                    borderRadius: "6px",
+                    fontSize: "14px",
+                  }}
+                />
+              </div>
+
+              <div>
+                <label
+                  style={{
+                    display: "block",
+                    marginBottom: "4px",
+                    fontWeight: "500",
+                  }}
+                >
+                  Max Ops Invoked
+                </label>
+                <input
+                  type="text"
+                  value={quickAddData.maxOpsInvoked}
+                  onChange={(e) =>
+                    setQuickAddData({
+                      ...quickAddData,
+                      maxOpsInvoked: e.target.value,
+                    })
+                  }
+                  style={{
+                    width: "100%",
+                    padding: "8px 12px",
+                    border: "1px solid #e5e7eb",
+                    borderRadius: "6px",
+                    fontSize: "14px",
+                  }}
+                />
+              </div>
+
+              <div>
+                <label
+                  style={{
+                    display: "block",
+                    marginBottom: "4px",
+                    fontWeight: "500",
+                  }}
+                >
+                  Max Ops Performed
+                </label>
+                <input
+                  type="text"
+                  value={quickAddData.maxOpsPerformed}
+                  onChange={(e) =>
+                    setQuickAddData({
+                      ...quickAddData,
+                      maxOpsPerformed: e.target.value,
+                    })
+                  }
+                  style={{
+                    width: "100%",
+                    padding: "8px 12px",
+                    border: "1px solid #e5e7eb",
+                    borderRadius: "6px",
+                    fontSize: "14px",
+                  }}
+                />
+              </div>
+
+              <div>
+                <label
+                  style={{
+                    display: "block",
+                    marginBottom: "8px",
+                    fontWeight: "600",
+                    fontSize: "16px",
+                    color: "#374151",
+                  }}
+                >
+                  TLS CipherSuites
+                </label>
+
+                <div
+                  style={{
+                    border: "1px solid #e5e7eb",
+                    borderRadius: "8px",
+                    padding: "16px",
+                    backgroundColor: "#fafafa",
+                    maxHeight: "200px",
+                    overflowY: "auto",
+                  }}
+                >
+                  <div style={{ marginBottom: "12px" }}>
+                    <label
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: "8px",
+                        cursor: "pointer",
+                        padding: "4px 0",
+                      }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={quickAddData.noTls}
+                        onChange={(e) => {
+                          setQuickAddData({
+                            ...quickAddData,
+                            noTls: e.target.checked,
+                            tlsCipherSuites: e.target.checked
+                              ? []
+                              : ["TLS_RSA_WITH_AES_128_CBC_SHA"],
+                          });
+                        }}
+                        style={{
+                          width: "16px",
+                          height: "16px",
+                          accentColor: "#0051c9",
+                        }}
+                      />
+                      <span style={{ fontWeight: "500", color: "#6b7280" }}>
+                        No TLS (TLS disabled)
+                      </span>
+                    </label>
+                  </div>
+
+                  <div
+                    style={{
+                      marginBottom: "8px",
+                      fontSize: "14px",
+                      color: "#6b7280",
+                    }}
+                  >
+                    The TLS CipherSuites that are supported on this particular
+                    connection. If not present TLS is disabled.
+                  </div>
+
+                  {tlsCipherSuiteOptions.map((option) => (
+                    <div key={option} style={{ marginBottom: "8px" }}>
+                      <label
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: "8px",
+                          cursor: "pointer",
+                          padding: "4px 0",
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={quickAddData.tlsCipherSuites.includes(
+                            option
+                          )}
+                          disabled={quickAddData.noTls}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setQuickAddData({
+                                ...quickAddData,
+                                tlsCipherSuites: [
+                                  ...quickAddData.tlsCipherSuites,
+                                  option,
+                                ],
+                                noTls: false,
+                              });
+                            } else {
+                              setQuickAddData({
+                                ...quickAddData,
+                                tlsCipherSuites:
+                                  quickAddData.tlsCipherSuites.filter(
+                                    (suite) => suite !== option
+                                  ),
+                              });
+                            }
+                          }}
+                          style={{
+                            width: "16px",
+                            height: "16px",
+                            accentColor: "#0051c9",
+                          }}
+                        />
+                        <span
+                          style={{
+                            fontSize: "13px",
+                            fontFamily: "monospace",
+                            color: quickAddData.noTls ? "#9ca3af" : "#374151",
+                          }}
+                        >
+                          {option}
+                        </span>
+                      </label>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div
+              style={{
+                display: "flex",
+                gap: "12px",
+                marginTop: "24px",
+                justifyContent: "flex-end",
+              }}
+            >
+              <button
+                onClick={() => setShowQuickAddModal(false)}
+                style={{
+                  padding: "10px 16px",
+                  borderRadius: "6px",
+                  border: "1px solid #e5e7eb",
+                  background: "#fff",
+                  color: "#374151",
+                  cursor: "pointer",
+                  fontSize: "14px",
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleQuickAdd}
+                disabled={isSubmitting}
+                style={{
+                  padding: "10px 16px",
+                  borderRadius: "6px",
+                  border: "none",
+                  background: "#0051c9",
+                  color: "#fff",
+                  cursor: "pointer",
+                  fontSize: "14px",
+                }}
+              >
+                {isSubmitting ? "Adding..." : "Add Connection"}
+              </button>
+            </div>
           </div>
         </div>
       )}
