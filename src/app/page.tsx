@@ -11,9 +11,9 @@ type SavedProfile = {
 };
 
 export default function Home() {
-  const [url, setUrl] = useState("");
-  const [bindDN, setBindDN] = useState("");
-  const [password, setPassword] = useState("");
+  const [url, setUrl] = useState("ldap://localhost:389");
+  const [bindDN, setBindDN] = useState("cn=admin,dc=dcm4che,dc=org");
+  const [password, setPassword] = useState("secret");
   const [insecure, setInsecure] = useState(false);
   const [result, setResult] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
