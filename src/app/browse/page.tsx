@@ -1380,9 +1380,11 @@ export default function Browse() {
         throw new Error(data?.error || `HTTP ${res.status}: ${res.statusText}`);
       }
 
-      // Update the selected entry's dicomAETitle attribute
-      selectedAEEntry.dicomAETitle = newAETitle;
-      console.log("Updated entry after modify:", selectedAEEntry);
+      // Update the selected entry's attributes
+      selectedDicomEntry.cn = editFormData.cn;
+      selectedDicomEntry.dicomHostname = editFormData.hostname;
+      selectedDicomEntry.dicomPort = editFormData.port;
+      console.log("Updated entry after modify:", selectedDicomEntry);
 
       setShowEditModal(false);
       setSelectedDicomEntry(null);
@@ -2696,7 +2698,7 @@ export default function Browse() {
               }}
             >
               <div style={{ marginBottom: "12px" }}>Error: {error}</div>
-              {error && error.includes("Warning: Database") && (
+              {error?.includes("Warning: Database") && (
                 <div style={{ display: "flex", gap: "8px" }}>
                   <button
                     onClick={() => {
