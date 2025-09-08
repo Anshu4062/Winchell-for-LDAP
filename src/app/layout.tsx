@@ -182,6 +182,7 @@ export default function RootLayout({
           </div>
         </header>
         <main>{children}</main>
+        {/* Force deployment update */}
       </body>
     </html>
   );
