@@ -40,21 +40,7 @@ export default function Home() {
     );
   }
 
-  function saveProfile() {
-    if (!url || !bindDN) return;
-    const name = prompt("Profile name:");
-    if (!name) return;
-
-    const newProfile: SavedProfile = { name, url, bindDN, password, insecure };
-    const updated = [
-      ...savedProfiles.filter((p) => p.name !== name),
-      newProfile,
-    ];
-    setSavedProfiles(updated);
-    localStorage.setItem("ldapProfiles", JSON.stringify(updated));
-  }
-
-  function loadProfile(name: string) {
+  async function loadProfile(name: string) {
     const profile = savedProfiles.find((p) => p.name === name);
     if (profile) {
       setUrl(profile.url);
@@ -62,6 +48,54 @@ export default function Home() {
       setPassword(profile.password);
       setInsecure(profile.insecure);
       setSelectedProfile(name);
+
+      // Automatically connect after loading profile
+      await connectWithProfile(profile);
+    }
+  }
+
+  async function connectWithProfile(profile: SavedProfile) {
+    setLoading(true);
+    setResult(null);
+
+    try {
+      const connectPayload = {
+        url: profile.url,
+        bindDN: profile.bindDN,
+        password: profile.password,
+        tls: profile.insecure ? { rejectUnauthorized: false } : undefined,
+      };
+
+      const res = await fetch("/api/ldap/connect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(connectPayload),
+      });
+
+      const data = await res.json();
+
+      if (res.ok && data?.ok) {
+        setResult("Connected successfully.");
+
+        // Store connection in sessionStorage and redirect
+        const sessionData = {
+          url: profile.url,
+          bindDN: profile.bindDN,
+          password: profile.password,
+          insecure: profile.insecure,
+          baseDN: "dc=dcm4che,dc=org",
+        };
+        sessionStorage.setItem("ldapConnection", JSON.stringify(sessionData));
+
+        // Redirect to browse page
+        window.location.href = "/browse";
+      } else {
+        setResult(`Failed: ${data?.error || res.statusText}`);
+      }
+    } catch (err) {
+      setResult(`Error: ${(err as Error).message}`);
+    } finally {
+      setLoading(false);
     }
   }
 
@@ -282,14 +316,15 @@ export default function Home() {
             <select
               value={selectedProfile}
               onChange={(e) => loadProfile(e.target.value)}
+              disabled={loading}
               style={{
                 padding: "12px 16px",
                 border: "1px solid #d1d5db",
                 borderRadius: "8px",
                 fontSize: "14px",
-                background: "#fff",
-                color: "#374151",
-                cursor: "pointer",
+                background: loading ? "#f3f4f6" : "#fff",
+                color: loading ? "#9ca3af" : "#374151",
+                cursor: loading ? "not-allowed" : "pointer",
               }}
             >
               <option value="">Select a profile...</option>
@@ -301,33 +336,33 @@ export default function Home() {
             </select>
             <button
               onClick={() => loadProfile(selectedProfile)}
-              disabled={!selectedProfile}
+              disabled={!selectedProfile || loading}
               style={{
                 padding: "12px 20px",
                 borderRadius: "8px",
                 border: "none",
-                background: selectedProfile ? "#374151" : "#d1d5db",
+                background: selectedProfile && !loading ? "#374151" : "#d1d5db",
                 color: "#fff",
-                cursor: selectedProfile ? "pointer" : "not-allowed",
+                cursor: selectedProfile && !loading ? "pointer" : "not-allowed",
                 fontWeight: "500",
                 fontSize: "14px",
                 transition: "all 0.2s ease",
                 boxShadow: "0 1px 3px rgba(0, 0, 0, 0.1)",
               }}
               onMouseOver={(e) => {
-                if (selectedProfile) {
+                if (selectedProfile && !loading) {
                   e.currentTarget.style.background = "#1f2937";
                   e.currentTarget.style.transform = "translateY(-1px)";
                 }
               }}
               onMouseOut={(e) => {
-                if (selectedProfile) {
+                if (selectedProfile && !loading) {
                   e.currentTarget.style.background = "#374151";
                   e.currentTarget.style.transform = "translateY(0)";
                 }
               }}
             >
-              Load Profile
+              {loading ? "Connecting..." : "Load Profile"}
             </button>
             {selectedProfile && (
               <button

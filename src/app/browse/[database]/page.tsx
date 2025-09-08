@@ -1074,9 +1074,32 @@ export default function DatabasePage({
                     }}
                   >
                     <div style={{ flex: 1 }}>
-                      <strong style={{ color: "#374151", fontSize: "16px" }}>
-                        {entry.dn}
-                      </strong>
+                      <div
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: "12px",
+                          marginBottom: "8px",
+                        }}
+                      >
+                        <span
+                          style={{
+                            background: "#3b82f6",
+                            color: "white",
+                            padding: "4px 8px",
+                            borderRadius: "4px",
+                            fontSize: "12px",
+                            fontWeight: "bold",
+                            minWidth: "24px",
+                            textAlign: "center",
+                          }}
+                        >
+                          #{index + 1}
+                        </span>
+                        <strong style={{ color: "#374151", fontSize: "16px" }}>
+                          {entry.dn}
+                        </strong>
+                      </div>
                       {isDicom && dicomData && (
                         <div style={{ marginTop: "12px" }}>
                           <div

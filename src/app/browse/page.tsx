@@ -25,8 +25,27 @@ export default function Browse() {
     [key: string]: { children: string[]; type: string; dn: string };
   }>({});
   const [expandedNodes, setExpandedNodes] = useState<Set<string>>(new Set());
-  const [loadingTree, setLoadingTree] = useState(false);
+  const [loadingTree] = useState(false);
   const connectionLoadedRef = useRef(false);
+  const [showDicomConnections, setShowDicomConnections] = useState(false);
+  const [dicomEntries, setDicomEntries] = useState<LdapEntry[]>([]);
+  const [selectedDicomEntry, setSelectedDicomEntry] =
+    useState<LdapEntry | null>(null);
+  const [showEditModal, setShowEditModal] = useState(false);
+  const [editFormData, setEditFormData] = useState({
+    cn: "",
+    hostname: "",
+    port: "",
+  });
+  const [showDicomAETitle, setShowDicomAETitle] = useState(false);
+  const [dicomAEEntries, setDicomAEEntries] = useState<LdapEntry[]>([]);
+  const [selectedAEEntry, setSelectedAEEntry] = useState<LdapEntry | null>(
+    null
+  );
+  const [showAEEditModal, setShowAEEditModal] = useState(false);
+  const [aeEditFormData, setAEEditFormData] = useState({
+    dicomAETitle: "",
+  });
 
   useEffect(() => {
     console.log("🔄 [DEBUG] Initial useEffect triggered");
@@ -431,6 +450,7 @@ export default function Browse() {
     }
   }
 
+  /*
   async function handleDatabaseClick(database: string) {
     setSelectedDatabase(database);
     setBaseDN(database);
@@ -493,6 +513,7 @@ export default function Browse() {
       setLoadingTree(false);
     }
   }
+  */
 
   function removeDatabase(database: string) {
     if (confirm(`Remove database "${database}" from the list?`)) {
@@ -742,7 +763,7 @@ export default function Browse() {
         try {
           const errorData = await res.text();
           console.log("❌ [DEBUG] Error response body:", errorData);
-        } catch (e) {
+        } catch {
           console.log("❌ [DEBUG] Could not read error response body");
         }
       }
@@ -818,6 +839,7 @@ export default function Browse() {
     }
   }
 
+  /*
   // Function to create a basic LDAP structure
   async function createBasicLDAPStructure() {
     console.log("🏗️ [DEBUG] Creating basic LDAP structure...");
@@ -850,6 +872,7 @@ export default function Browse() {
       return false;
     }
   }
+  */
 
   // Function to ensure parent DN structure exists - FIXED VERSION
   async function ensureParentDNStructure(dn: string): Promise<boolean> {
@@ -1027,6 +1050,350 @@ export default function Browse() {
     };
 
     return templates[objectClass] || templates["organizationalUnit"];
+  }
+
+  // Function to search for specific DICOM AE Title entry (entry #662)
+  async function searchSpecificDicomAE() {
+    if (!url || !bindDN || !password || !selectedDatabase) {
+      setError("Missing connection details or no database selected");
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+
+    try {
+      // Search for all entries to get the full list
+      const searchPayload = {
+        url,
+        bindDN,
+        password,
+        baseDN: selectedDatabase,
+        filter: "(objectClass=*)",
+        tls: insecure ? { rejectUnauthorized: false } : undefined,
+      };
+
+      const res = await fetch("/api/ldap/search", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(searchPayload),
+      });
+
+      const data = await res.json();
+
+      if (res.ok && data?.ok && data.entries) {
+        console.log("Found all entries:", data.entries.length);
+
+        // Target entry #662 (index 661 in 0-based array)
+        const targetIndex = 661; // Entry #662 is at index 661
+
+        if (data.entries.length > targetIndex) {
+          const targetEntry = data.entries[targetIndex];
+          console.log(`Found entry #662 (index ${targetIndex}):`, targetEntry);
+          handleAEEntrySelect(targetEntry);
+        } else {
+          setError(
+            `Entry #662 not found. Only ${data.entries.length} entries available.`
+          );
+        }
+      } else {
+        setError(data?.error || "Failed to search for entries");
+      }
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // Function to search for DICOM AE Title entries (all entries)
+  async function searchDicomAEEntries() {
+    if (!url || !bindDN || !password || !selectedDatabase) {
+      setError("Missing connection details or no database selected");
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+
+    try {
+      const searchPayload = {
+        url,
+        bindDN,
+        password,
+        baseDN: selectedDatabase,
+        filter: "(dicomAETitle=*)",
+        tls: insecure ? { rejectUnauthorized: false } : undefined,
+      };
+
+      const res = await fetch("/api/ldap/search", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(searchPayload),
+      });
+
+      const data = await res.json();
+
+      if (res.ok && data?.ok && data.entries) {
+        console.log("Found DICOM AE entries:", data.entries);
+        setDicomAEEntries(data.entries);
+        setShowDicomAETitle(true);
+      } else {
+        setError(data?.error || "Failed to search DICOM AE entries");
+      }
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // Function to handle DICOM AE entry selection
+  function handleAEEntrySelect(entry: LdapEntry) {
+    console.log("Selected DICOM AE entry:", entry);
+    setSelectedAEEntry(entry);
+    setAEEditFormData({
+      dicomAETitle: String(entry.dicomAETitle || ""),
+    });
+    setShowAEEditModal(true);
+  }
+
+  // Function to save edited DICOM AE entry
+  async function saveDicomAEEntry() {
+    if (!selectedAEEntry || !url || !bindDN || !password) return;
+
+    setLoading(true);
+    setError(null);
+
+    try {
+      const originalAETitle = String(selectedAEEntry.dicomAETitle || "");
+      const newAETitle = aeEditFormData.dicomAETitle;
+      const aeTitleChanged = originalAETitle !== newAETitle;
+
+      console.log("Saving DICOM AE entry:", {
+        entryDN: selectedAEEntry.dn,
+        originalAETitle,
+        newAETitle,
+        aeTitleChanged,
+        formData: aeEditFormData,
+      });
+
+      // Use rename operation to change the dicomAETitle in the RDN
+      if (aeTitleChanged) {
+        console.log("Renaming entry to update dicomAETitle in RDN");
+
+        const newRdn = `dicomAETitle=${newAETitle}`;
+
+        const renameRes = await fetch("/api/ldap/rename", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            url,
+            bindDN,
+            password,
+            entryDN: selectedAEEntry.dn,
+            newRdn: newRdn,
+            tls: insecure ? { rejectUnauthorized: false } : undefined,
+          }),
+        });
+
+        const renameData = await renameRes.json();
+        console.log("Rename response:", {
+          status: renameRes.status,
+          data: renameData,
+        });
+
+        if (!renameRes.ok || !renameData?.ok) {
+          throw new Error(
+            `Failed to rename entry: ${
+              renameData?.error || renameRes.statusText
+            }`
+          );
+        }
+
+        // Update the selected entry's DN and dicomAETitle
+        const oldRdn = `dicomAETitle=${originalAETitle}`;
+        selectedAEEntry.dn = selectedAEEntry.dn.replace(oldRdn, newRdn);
+        selectedAEEntry.dicomAETitle = newAETitle;
+        console.log("Updated entry after rename:", selectedAEEntry);
+      }
+
+      setShowAEEditModal(false);
+      setSelectedAEEntry(null);
+      // Refresh the DICOM AE entries list
+      await searchDicomAEEntries();
+    } catch (err) {
+      console.error("Error saving DICOM AE entry:", err);
+      setError((err as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // Function to search for DICOM port entries
+  async function searchDicomEntries() {
+    if (!url || !bindDN || !password || !selectedDatabase) {
+      setError("Missing connection details or no database selected");
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+
+    try {
+      const searchPayload = {
+        url,
+        bindDN,
+        password,
+        baseDN: selectedDatabase,
+        filter: "(dicomPort=*)",
+        tls: insecure ? { rejectUnauthorized: false } : undefined,
+      };
+
+      const res = await fetch("/api/ldap/search", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(searchPayload),
+      });
+
+      const data = await res.json();
+
+      if (res.ok && data?.ok && data.entries) {
+        console.log("Found DICOM entries:", data.entries);
+        setDicomEntries(data.entries);
+        setShowDicomConnections(true);
+      } else {
+        setError(data?.error || "Failed to search DICOM entries");
+      }
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // Function to handle DICOM entry selection
+  function handleDicomEntrySelect(entry: LdapEntry) {
+    console.log("Selected DICOM entry:", entry);
+    setSelectedDicomEntry(entry);
+    setEditFormData({
+      cn: String(entry.cn || ""),
+      hostname: String(entry.dicomHostname || ""),
+      port: String(entry.dicomPort || ""),
+    });
+    setShowEditModal(true);
+  }
+
+  // Function to save edited DICOM entry
+  async function saveDicomEntry() {
+    if (!selectedDicomEntry || !url || !bindDN || !password) return;
+
+    setLoading(true);
+    setError(null);
+
+    try {
+      const originalCn = String(selectedDicomEntry.cn || "");
+      const newCn = editFormData.cn;
+      const cnChanged = originalCn !== newCn;
+
+      console.log("Saving DICOM entry:", {
+        entryDN: selectedDicomEntry.dn,
+        originalCn,
+        newCn,
+        cnChanged,
+        formData: editFormData,
+      });
+
+      // If cn changed, we need to rename the entry first
+      if (cnChanged) {
+        console.log("Renaming entry due to cn change");
+        const renameRes = await fetch("/api/ldap/rename", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            url,
+            bindDN,
+            password,
+            entryDN: selectedDicomEntry.dn,
+            newRdn: `cn=${newCn}`,
+            tls: insecure ? { rejectUnauthorized: false } : undefined,
+          }),
+        });
+
+        const renameData = await renameRes.json();
+        console.log("Rename response:", {
+          status: renameRes.status,
+          data: renameData,
+        });
+
+        if (!renameRes.ok || !renameData?.ok) {
+          throw new Error(
+            `Failed to rename entry: ${
+              renameData?.error || renameRes.statusText
+            }`
+          );
+        }
+
+        // Update the selected entry's DN for the modify operation
+        selectedDicomEntry.dn = selectedDicomEntry.dn.replace(
+          `cn=${originalCn}`,
+          `cn=${newCn}`
+        );
+      }
+
+      // Now modify the other attributes (dicomHostname and dicomPort)
+      const changes = [
+        {
+          type: "replace" as const,
+          attribute: "dicomHostname",
+          values: [editFormData.hostname],
+        },
+        {
+          type: "replace" as const,
+          attribute: "dicomPort",
+          values: [editFormData.port],
+        },
+      ];
+
+      console.log("Modifying other attributes:", {
+        entryDN: selectedDicomEntry.dn,
+        changes,
+      });
+
+      const res = await fetch("/api/ldap/modify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          url,
+          bindDN,
+          password,
+          entryDN: selectedDicomEntry.dn,
+          changes,
+          tls: insecure ? { rejectUnauthorized: false } : undefined,
+        }),
+      });
+
+      const data = await res.json();
+      console.log("Modify response:", { status: res.status, data });
+
+      if (!res.ok || !data?.ok) {
+        throw new Error(data?.error || `HTTP ${res.status}: ${res.statusText}`);
+      }
+
+      // Update the selected entry's dicomAETitle attribute
+      selectedAEEntry.dicomAETitle = newAETitle;
+      console.log("Updated entry after modify:", selectedAEEntry);
+
+      setShowEditModal(false);
+      setSelectedDicomEntry(null);
+      // Refresh the DICOM entries list
+      await searchDicomEntries();
+    } catch (err) {
+      console.error("Error saving DICOM entry:", err);
+      setError((err as Error).message);
+    } finally {
+      setLoading(false);
+    }
   }
 
   // FIXED: Function to validate LDAP server connection and schema
@@ -1414,46 +1781,22 @@ export default function Browse() {
         flexDirection: "column",
       }}
     >
-      {/* Header Navigation */}
+      {/* Page Title */}
       <div
         style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
           padding: "20px 24px",
           borderBottom: "1px solid #e5e7eb",
           background: "#fafafa",
           borderRadius: "16px 16px 0 0",
         }}
       >
-        <Link
-          href="/"
+        <div
           style={{
-            textDecoration: "none",
-            color: "#3b82f6",
-            fontWeight: "500",
-            fontSize: "16px",
             display: "flex",
             alignItems: "center",
-            gap: "8px",
+            justifyContent: "space-between",
           }}
         >
-          <svg
-            width="16"
-            height="16"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            style={{ marginRight: "4px" }}
-          >
-            <path d="m15 18-6-6 6-6"></path>
-          </svg>
-          Home
-        </Link>
-        <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
           <h1 style={{ fontSize: "24px", margin: 0, color: "#1a1a1a" }}>
             Browse LDAP
           </h1>
@@ -2117,9 +2460,9 @@ export default function Browse() {
                 Go to Connect Page
               </Link>
             </div>
-          ) : selectedDatabase ? (
+          ) : false && selectedDatabase ? (
             <>
-              {/* Database Header */}
+              {/* Database Header - HIDDEN */}
               <div style={{ marginBottom: "24px" }}>
                 <h2
                   style={{
@@ -2135,301 +2478,8 @@ export default function Browse() {
                   Database Management - Add, Edit, and View Entries
                 </p>
               </div>
-
-              {/* Quick Actions */}
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
-                  gap: "16px",
-                  marginBottom: "24px",
-                }}
-              >
-                {/* View All Entries */}
-                <div
-                  style={{
-                    padding: "20px",
-                    border: "1px solid #e5e7eb",
-                    borderRadius: "12px",
-                    background: "#f8fafc",
-                    cursor: "pointer",
-                    transition: "all 0.2s ease",
-                  }}
-                  onMouseOver={(e) => {
-                    e.currentTarget.style.background = "#f1f5f9";
-                    e.currentTarget.style.borderColor = "#cbd5e1";
-                  }}
-                  onMouseOut={(e) => {
-                    e.currentTarget.style.background = "#f8fafc";
-                    e.currentTarget.style.borderColor = "#e5e7eb";
-                  }}
-                  onClick={() => {
-                    setFilter("(objectClass=*)");
-                    onSearch(new Event("submit") as unknown as React.FormEvent);
-                  }}
-                >
-                  <div
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: "12px",
-                      marginBottom: "8px",
-                    }}
-                  >
-                    <svg
-                      width="20"
-                      height="20"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2"
-                    >
-                      <path d="M9 12l2 2 4-4"></path>
-                      <path d="M21 12c-1 0-3-1-3-3s2-3 3-3 3 1 3 3-2 3-3 3z"></path>
-                      <path d="M3 12c1 0 3-1 3-3s-2-3-3-3-3 1-3 3 2 3 3 3z"></path>
-                    </svg>
-                    <h3
-                      style={{
-                        margin: 0,
-                        fontSize: "16px",
-                        fontWeight: "600",
-                        color: "#374151",
-                      }}
-                    >
-                      View All Entries
-                    </h3>
-                  </div>
-                  <p style={{ margin: 0, fontSize: "14px", color: "#6b7280" }}>
-                    Browse all existing entries in this database
-                  </p>
-                </div>
-
-                {/* Quick Search */}
-                <div
-                  style={{
-                    padding: "20px",
-                    border: "1px solid #e5e7eb",
-                    borderRadius: "12px",
-                    background: "#f8fafc",
-                    cursor: "pointer",
-                    transition: "all 0.2s ease",
-                  }}
-                  onMouseOver={(e) => {
-                    e.currentTarget.style.background = "#f1f5f9";
-                    e.currentTarget.style.borderColor = "#cbd5e1";
-                  }}
-                  onMouseOut={(e) => {
-                    e.currentTarget.style.background = "#f8fafc";
-                    e.currentTarget.style.borderColor = "#e5e7eb";
-                  }}
-                  onClick={() => {
-                    setFilter("(objectClass=organizationalUnit)");
-                    onSearch(new Event("submit") as unknown as React.FormEvent);
-                  }}
-                >
-                  <div
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: "12px",
-                      marginBottom: "8px",
-                    }}
-                  >
-                    <svg
-                      width="20"
-                      height="20"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2"
-                    >
-                      <path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"></path>
-                    </svg>
-                    <h3
-                      style={{
-                        margin: 0,
-                        fontSize: "16px",
-                        fontWeight: "600",
-                        color: "#374151",
-                      }}
-                    >
-                      View OUs Only
-                    </h3>
-                  </div>
-                  <p style={{ margin: 0, fontSize: "14px", color: "#6b7280" }}>
-                    Show only organizational units
-                  </p>
-                </div>
-
-                {/* Add New Entry */}
-                <div
-                  style={{
-                    padding: "20px",
-                    border: "1px solid #e5e7eb",
-                    borderRadius: "12px",
-                    background: "#f8fafc",
-                    cursor: "pointer",
-                    transition: "all 0.2s ease",
-                  }}
-                  onMouseOver={(e) => {
-                    e.currentTarget.style.background = "#f1f5f9";
-                    e.currentTarget.style.borderColor = "#cbd5e1";
-                  }}
-                  onMouseOut={(e) => {
-                    e.currentTarget.style.background = "#f8fafc";
-                    e.currentTarget.style.borderColor = "#e5e7eb";
-                  }}
-                  onClick={() => {
-                    // Scroll to add entry section
-                    document
-                      .getElementById("add-entry-section")
-                      ?.scrollIntoView({ behavior: "smooth" });
-                  }}
-                >
-                  <div
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: "12px",
-                      marginBottom: "8px",
-                    }}
-                  >
-                    <svg
-                      width="20"
-                      height="20"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2"
-                    >
-                      <line x1="12" y1="5" x2="12" y2="19"></line>
-                      <line x1="5" y1="12" x2="19" y2="12"></line>
-                    </svg>
-                    <h3
-                      style={{
-                        margin: 0,
-                        fontSize: "16px",
-                        fontWeight: "600",
-                        color: "#374151",
-                      }}
-                    >
-                      Add New Entry
-                    </h3>
-                  </div>
-                  <p style={{ margin: 0, fontSize: "14px", color: "#6b7280" }}>
-                    Create new organizational units or users
-                  </p>
-                </div>
-              </div>
-
-              {/* Search Form */}
-              <div
-                style={{
-                  padding: "20px",
-                  border: "1px solid #e5e7eb",
-                  borderRadius: "12px",
-                  background: "#fafafa",
-                  marginBottom: "24px",
-                }}
-              >
-                <h3
-                  style={{
-                    margin: "0 0 16px 0",
-                    fontSize: "16px",
-                    fontWeight: "600",
-                    color: "#374151",
-                  }}
-                >
-                  Custom Search
-                </h3>
-                <form
-                  onSubmit={onSearch}
-                  style={{ display: "grid", gap: "16px" }}
-                >
-                  <div
-                    style={{
-                      display: "grid",
-                      gap: "16px",
-                      gridTemplateColumns: "1fr auto",
-                    }}
-                  >
-                    <div>
-                      <label
-                        style={{
-                          display: "block",
-                          marginBottom: "8px",
-                          fontWeight: "500",
-                          color: "#374151",
-                          fontSize: "14px",
-                        }}
-                      >
-                        Filter
-                      </label>
-                      <input
-                        value={filter}
-                        onChange={(e) => setFilter(e.target.value)}
-                        placeholder="(objectClass=*)"
-                        style={{
-                          width: "100%",
-                          padding: "12px 16px",
-                          border: "1px solid #d1d5db",
-                          borderRadius: "8px",
-                          fontSize: "14px",
-                          transition: "border-color 0.2s ease",
-                          boxSizing: "border-box",
-                        }}
-                        onFocus={(e) => {
-                          e.target.style.borderColor = "#3b82f6";
-                          e.target.style.outline = "none";
-                        }}
-                        onBlur={(e) => {
-                          e.target.style.borderColor = "#d1d5db";
-                        }}
-                      />
-                    </div>
-                    <div style={{ display: "flex", alignItems: "end" }}>
-                      <button
-                        type="submit"
-                        disabled={loading}
-                        style={{
-                          padding: "12px 20px",
-                          borderRadius: "8px",
-                          border: "none",
-                          background: "#1f2937",
-                          color: "#fff",
-                          cursor: loading ? "not-allowed" : "pointer",
-                          fontWeight: "500",
-                          fontSize: "14px",
-                          transition: "all 0.2s ease",
-                          boxShadow: "0 1px 3px rgba(0, 0, 0, 0.1)",
-                          whiteSpace: "nowrap",
-                          minHeight: "44px",
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "center",
-                        }}
-                        onMouseOver={(e) => {
-                          if (!loading) {
-                            e.currentTarget.style.background = "#111827";
-                            e.currentTarget.style.transform =
-                              "translateY(-1px)";
-                          }
-                        }}
-                        onMouseOut={(e) => {
-                          if (!loading) {
-                            e.currentTarget.style.background = "#1f2937";
-                            e.currentTarget.style.transform = "translateY(0)";
-                          }
-                        }}
-                      >
-                        {loading ? "Searching..." : "Search"}
-                      </button>
-                    </div>
-                  </div>
-                </form>
-              </div>
             </>
-          ) : loadingDatabases ? (
+          ) : false && loadingDatabases ? (
             <div
               style={{
                 textAlign: "center",
@@ -2476,103 +2526,163 @@ export default function Browse() {
           ) : (
             <div
               style={{
-                textAlign: "center",
-                padding: "60px 20px",
                 flex: 1,
                 display: "flex",
-                flexDirection: "column",
                 alignItems: "center",
                 justifyContent: "center",
+                background: "#f9fafb",
               }}
             >
-              <div style={{ fontSize: "48px", marginBottom: "20px" }}>
-                <svg
-                  width="48"
-                  height="48"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.5"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
+              <div style={{ textAlign: "center" }}>
+                <div
+                  style={{
+                    color: "#6b7280",
+                    fontSize: "18px",
+                    fontWeight: "500",
+                    marginBottom: "24px",
+                  }}
                 >
-                  <path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"></path>
-                </svg>
+                  Select your database
+                </div>
+
+                {selectedDatabase && (
+                  <div
+                    style={{
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: "12px",
+                      alignItems: "center",
+                    }}
+                  >
+                    <button
+                      onClick={searchDicomEntries}
+                      disabled={loading}
+                      style={{
+                        padding: "12px 24px",
+                        borderRadius: "8px",
+                        border: "none",
+                        background: loading ? "#9ca3af" : "#3b82f6",
+                        color: "#fff",
+                        cursor: loading ? "not-allowed" : "pointer",
+                        fontWeight: "500",
+                        fontSize: "14px",
+                        transition: "all 0.2s ease",
+                        boxShadow: "0 2px 4px rgba(0, 0, 0, 0.1)",
+                      }}
+                      onMouseOver={(e) => {
+                        if (!loading) {
+                          e.currentTarget.style.background = "#2563eb";
+                          e.currentTarget.style.transform = "translateY(-1px)";
+                        }
+                      }}
+                      onMouseOut={(e) => {
+                        if (!loading) {
+                          e.currentTarget.style.background = "#3b82f6";
+                          e.currentTarget.style.transform = "translateY(0)";
+                        }
+                      }}
+                    >
+                      {loading ? "Loading..." : "View DICOM Connections"}
+                    </button>
+
+                    <button
+                      onClick={searchSpecificDicomAE}
+                      disabled={loading}
+                      style={{
+                        padding: "12px 24px",
+                        borderRadius: "8px",
+                        border: "none",
+                        background: loading ? "#9ca3af" : "#10b981",
+                        color: "#fff",
+                        cursor: loading ? "not-allowed" : "pointer",
+                        fontWeight: "500",
+                        fontSize: "14px",
+                        transition: "all 0.2s ease",
+                        boxShadow: "0 2px 4px rgba(0, 0, 0, 0.1)",
+                      }}
+                      onMouseOver={(e) => {
+                        if (!loading) {
+                          e.currentTarget.style.background = "#059669";
+                          e.currentTarget.style.transform = "translateY(-1px)";
+                        }
+                      }}
+                      onMouseOut={(e) => {
+                        if (!loading) {
+                          e.currentTarget.style.background = "#10b981";
+                          e.currentTarget.style.transform = "translateY(0)";
+                        }
+                      }}
+                    >
+                      {loading ? "Loading..." : "Edit RADSHARE AE Title"}
+                    </button>
+                  </div>
+                )}
+
+                {showDicomConnections && dicomEntries.length > 0 && (
+                  <div
+                    style={{
+                      marginTop: "24px",
+                      maxWidth: "400px",
+                      margin: "24px auto 0",
+                    }}
+                  >
+                    <label
+                      style={{
+                        display: "block",
+                        marginBottom: "8px",
+                        fontWeight: "500",
+                        color: "#374151",
+                        fontSize: "14px",
+                      }}
+                    >
+                      Select DICOM Connection:
+                    </label>
+                    <select
+                      onChange={(e) => {
+                        const selectedEntry = dicomEntries.find(
+                          (entry) => entry.dn === e.target.value
+                        );
+                        if (selectedEntry) {
+                          handleDicomEntrySelect(selectedEntry);
+                        }
+                      }}
+                      style={{
+                        width: "100%",
+                        padding: "12px 16px",
+                        border: "1px solid #d1d5db",
+                        borderRadius: "8px",
+                        fontSize: "14px",
+                        background: "#fff",
+                        color: "#374151",
+                        cursor: "pointer",
+                      }}
+                    >
+                      <option value="">Choose a connection...</option>
+                      {dicomEntries.map((entry) => (
+                        <option key={entry.dn} value={entry.dn}>
+                          {String(entry.cn || "Unknown Connection")}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
+                {showDicomConnections && dicomEntries.length === 0 && (
+                  <div
+                    style={{
+                      marginTop: "24px",
+                      color: "#6b7280",
+                      fontSize: "14px",
+                    }}
+                  >
+                    No DICOM connections found
+                  </div>
+                )}
               </div>
-              <h2
-                style={{
-                  margin: "0 0 16px 0",
-                  fontSize: "24px",
-                  fontWeight: "600",
-                  color: "#374151",
-                }}
-              >
-                No Database Selected
-              </h2>
-              <p
-                style={{
-                  margin: "0 0 24px 0",
-                  color: "#6b7280",
-                  fontSize: "16px",
-                  maxWidth: "500px",
-                }}
-              >
-                Select a database from the left sidebar to start browsing and
-                managing entries.
-              </p>
-              <button
-                onClick={() => {
-                  const newDN = prompt(
-                    "Enter the base DN for new database (e.g., dc=example,dc=com):"
-                  );
-                  if (newDN && newDN.trim()) {
-                    handleCreateDatabase(newDN.trim());
-                  }
-                }}
-                style={{
-                  padding: "12px 20px",
-                  borderRadius: "8px",
-                  border: "none",
-                  background: "#10b981",
-                  color: "#fff",
-                  cursor: "pointer",
-                  fontWeight: "500",
-                  fontSize: "14px",
-                  transition: "all 0.2s ease",
-                  minHeight: "44px",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                }}
-                onMouseOver={(e) => {
-                  e.currentTarget.style.background = "#059669";
-                  e.currentTarget.style.transform = "translateY(-1px)";
-                }}
-                onMouseOut={(e) => {
-                  e.currentTarget.style.background = "#10b981";
-                  e.currentTarget.style.transform = "translateY(0)";
-                }}
-              >
-                <svg
-                  width="14"
-                  height="14"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  style={{ marginRight: "6px" }}
-                >
-                  <line x1="12" y1="5" x2="12" y2="19"></line>
-                  <line x1="5" y1="12" x2="19" y2="12"></line>
-                </svg>
-                Create New Database
-              </button>
             </div>
           )}
 
-          {error && (
+          {false && error && (
             <div
               style={{
                 marginBottom: "16px",
@@ -2586,7 +2696,7 @@ export default function Browse() {
               }}
             >
               <div style={{ marginBottom: "12px" }}>Error: {error}</div>
-              {error.includes("Warning: Database") && (
+              {error && error.includes("Warning: Database") && (
                 <div style={{ display: "flex", gap: "8px" }}>
                   <button
                     onClick={() => {
@@ -2652,8 +2762,8 @@ export default function Browse() {
             </div>
           )}
 
-          {/* Add Entry Section - Only show when database is selected */}
-          {selectedDatabase && (
+          {/* Add Entry Section - Only show when database is selected - HIDDEN */}
+          {false && selectedDatabase && (
             <div
               id="add-entry-section"
               style={{
@@ -2825,7 +2935,7 @@ export default function Browse() {
                         let parsedAttrs: Record<string, string | string[]>;
                         try {
                           parsedAttrs = JSON.parse(newAttrs);
-                        } catch (err) {
+                        } catch {
                           throw new Error("Invalid JSON in attributes field");
                         }
 
@@ -3080,7 +3190,7 @@ export default function Browse() {
                       e.currentTarget.style.transform = "translateY(0)";
                     }}
                   >
-                    {entries && entries.some((entry) => entry.dn === newDn)
+                    {entries?.some((entry) => entry.dn === newDn)
                       ? "Update Entry"
                       : "Add Entry"}
                   </button>
@@ -3380,6 +3490,377 @@ export default function Browse() {
           )}
         </div>
       </div>
+
+      {/* Edit DICOM Connection Modal */}
+      {showEditModal && (
+        <div
+          style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: "rgba(0, 0, 0, 0.5)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 1000,
+          }}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              setShowEditModal(false);
+            }
+          }}
+        >
+          <div
+            style={{
+              background: "#fff",
+              borderRadius: "12px",
+              padding: "24px",
+              maxWidth: "500px",
+              width: "90%",
+              maxHeight: "80vh",
+              overflow: "auto",
+            }}
+          >
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                marginBottom: "20px",
+              }}
+            >
+              <h2 style={{ margin: 0, fontSize: "20px", fontWeight: "600" }}>
+                Edit DICOM Connection
+              </h2>
+              <button
+                onClick={() => setShowEditModal(false)}
+                style={{
+                  background: "none",
+                  border: "none",
+                  fontSize: "24px",
+                  cursor: "pointer",
+                  color: "#6b7280",
+                }}
+              >
+                ×
+              </button>
+            </div>
+
+            <div style={{ display: "grid", gap: "16px" }}>
+              <div>
+                <label
+                  style={{
+                    display: "block",
+                    marginBottom: "4px",
+                    fontWeight: "500",
+                    fontSize: "14px",
+                  }}
+                >
+                  Connection Name (cn) *
+                </label>
+                <input
+                  type="text"
+                  value={editFormData.cn}
+                  onChange={(e) =>
+                    setEditFormData({ ...editFormData, cn: e.target.value })
+                  }
+                  style={{
+                    width: "100%",
+                    padding: "8px 12px",
+                    border: "1px solid #e5e7eb",
+                    borderRadius: "6px",
+                    fontSize: "14px",
+                  }}
+                />
+              </div>
+
+              <div>
+                <label
+                  style={{
+                    display: "block",
+                    marginBottom: "4px",
+                    fontWeight: "500",
+                    fontSize: "14px",
+                  }}
+                >
+                  Hostname *
+                </label>
+                <input
+                  type="text"
+                  value={editFormData.hostname}
+                  onChange={(e) =>
+                    setEditFormData({
+                      ...editFormData,
+                      hostname: e.target.value,
+                    })
+                  }
+                  style={{
+                    width: "100%",
+                    padding: "8px 12px",
+                    border: "1px solid #e5e7eb",
+                    borderRadius: "6px",
+                    fontSize: "14px",
+                  }}
+                />
+              </div>
+
+              <div>
+                <label
+                  style={{
+                    display: "block",
+                    marginBottom: "4px",
+                    fontWeight: "500",
+                    fontSize: "14px",
+                  }}
+                >
+                  Port *
+                </label>
+                <input
+                  type="text"
+                  value={editFormData.port}
+                  onChange={(e) =>
+                    setEditFormData({ ...editFormData, port: e.target.value })
+                  }
+                  style={{
+                    width: "100%",
+                    padding: "8px 12px",
+                    border: "1px solid #e5e7eb",
+                    borderRadius: "6px",
+                    fontSize: "14px",
+                  }}
+                />
+              </div>
+            </div>
+
+            <div
+              style={{
+                display: "flex",
+                gap: "12px",
+                marginTop: "24px",
+                justifyContent: "flex-end",
+              }}
+            >
+              <button
+                onClick={() => setShowEditModal(false)}
+                style={{
+                  padding: "10px 16px",
+                  borderRadius: "6px",
+                  border: "1px solid #e5e7eb",
+                  background: "#fff",
+                  color: "#374151",
+                  cursor: "pointer",
+                  fontSize: "14px",
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={saveDicomEntry}
+                disabled={
+                  loading ||
+                  !editFormData.cn ||
+                  !editFormData.hostname ||
+                  !editFormData.port
+                }
+                style={{
+                  padding: "10px 16px",
+                  borderRadius: "6px",
+                  border: "none",
+                  background:
+                    loading ||
+                    !editFormData.cn ||
+                    !editFormData.hostname ||
+                    !editFormData.port
+                      ? "#9ca3af"
+                      : "#3b82f6",
+                  color: "#fff",
+                  cursor:
+                    loading ||
+                    !editFormData.cn ||
+                    !editFormData.hostname ||
+                    !editFormData.port
+                      ? "not-allowed"
+                      : "pointer",
+                  fontSize: "14px",
+                }}
+              >
+                {loading ? "Saving..." : "Save Changes"}
+              </button>
+            </div>
+
+            {error && error && (
+              <div
+                style={{
+                  marginTop: "16px",
+                  padding: "12px",
+                  background: "#fef2f2",
+                  border: "1px solid #fecaca",
+                  borderRadius: "6px",
+                  color: "#dc2626",
+                  fontSize: "14px",
+                }}
+              >
+                Error: {error}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Edit DICOM AE Title Modal */}
+      {showAEEditModal && (
+        <div
+          style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: "rgba(0, 0, 0, 0.5)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 1000,
+          }}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              setShowAEEditModal(false);
+            }
+          }}
+        >
+          <div
+            style={{
+              background: "#fff",
+              borderRadius: "12px",
+              padding: "24px",
+              maxWidth: "500px",
+              width: "90%",
+              maxHeight: "80vh",
+              overflow: "auto",
+            }}
+          >
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                marginBottom: "20px",
+              }}
+            >
+              <h2 style={{ margin: 0, fontSize: "20px", fontWeight: "600" }}>
+                Edit DICOM AE Title
+              </h2>
+              <button
+                onClick={() => setShowAEEditModal(false)}
+                style={{
+                  background: "none",
+                  border: "none",
+                  fontSize: "24px",
+                  cursor: "pointer",
+                  color: "#6b7280",
+                }}
+              >
+                ×
+              </button>
+            </div>
+
+            <div style={{ display: "grid", gap: "16px" }}>
+              <div>
+                <label
+                  style={{
+                    display: "block",
+                    marginBottom: "4px",
+                    fontWeight: "500",
+                    fontSize: "14px",
+                  }}
+                >
+                  DICOM AE Title *
+                </label>
+                <input
+                  type="text"
+                  value={aeEditFormData.dicomAETitle}
+                  onChange={(e) =>
+                    setAEEditFormData({
+                      ...aeEditFormData,
+                      dicomAETitle: e.target.value,
+                    })
+                  }
+                  style={{
+                    width: "100%",
+                    padding: "8px 12px",
+                    border: "1px solid #e5e7eb",
+                    borderRadius: "6px",
+                    fontSize: "14px",
+                  }}
+                />
+              </div>
+            </div>
+
+            <div
+              style={{
+                display: "flex",
+                gap: "12px",
+                marginTop: "24px",
+                justifyContent: "flex-end",
+              }}
+            >
+              <button
+                onClick={() => setShowAEEditModal(false)}
+                style={{
+                  padding: "10px 16px",
+                  borderRadius: "6px",
+                  border: "1px solid #e5e7eb",
+                  background: "#fff",
+                  color: "#374151",
+                  cursor: "pointer",
+                  fontSize: "14px",
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={saveDicomAEEntry}
+                disabled={loading || !aeEditFormData.dicomAETitle}
+                style={{
+                  padding: "10px 16px",
+                  borderRadius: "6px",
+                  border: "none",
+                  background:
+                    loading || !aeEditFormData.dicomAETitle
+                      ? "#9ca3af"
+                      : "#10b981",
+                  color: "#fff",
+                  cursor:
+                    loading || !aeEditFormData.dicomAETitle
+                      ? "not-allowed"
+                      : "pointer",
+                  fontSize: "14px",
+                }}
+              >
+                {loading ? "Saving..." : "Save Changes"}
+              </button>
+            </div>
+
+            {error && error && (
+              <div
+                style={{
+                  marginTop: "16px",
+                  padding: "12px",
+                  background: "#fef2f2",
+                  border: "1px solid #fecaca",
+                  borderRadius: "6px",
+                  color: "#dc2626",
+                  fontSize: "14px",
+                }}
+              >
+                Error: {error}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
